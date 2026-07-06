@@ -1,6 +1,12 @@
 import type { McpChartEmbedStoredConfig } from '@nao/shared';
 import type { DisplaySettings } from '@nao/shared/date';
-import type { AnalyticsEventMetadata, CitationData, LlmProvider, UserPreferences } from '@nao/shared/types';
+import type {
+	AnalyticsEventMetadata,
+	CitationData,
+	LlmProvider,
+	RepoProvider,
+	UserPreferences,
+} from '@nao/shared/types';
 import {
 	ANALYTICS_ASSET_TYPES,
 	ANALYTICS_EVENT_TYPES,
@@ -56,6 +62,7 @@ export const user = sqliteTable('user', {
 	memoryEnabled: integer('memory_enabled', { mode: 'boolean' }).default(true).notNull(),
 	messagingProviderCode: text('messaging_provider_code').unique(),
 	githubAccessToken: text('github_access_token'),
+	gitlabAccessToken: text('gitlab_access_token'),
 	createdAt: integer('created_at', { mode: 'timestamp_ms' })
 		.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 		.notNull(),
@@ -691,6 +698,7 @@ export const contextRecommendationConfig = sqliteTable('context_recommendation_c
 	frequency: text('frequency', { enum: CONTEXT_RECOMMENDATION_FREQUENCIES }),
 	customSystemPromptInstructions: text('custom_system_prompt_instructions'),
 	repoFullName: text('repo_full_name'),
+	repoProvider: text('repo_provider').$type<RepoProvider>(),
 	autoCreatePrs: integer('auto_create_prs', { mode: 'boolean' }),
 	maxAutoPrsPerRun: integer('max_auto_prs_per_run'),
 	createdAt: integer('created_at', { mode: 'timestamp_ms' })

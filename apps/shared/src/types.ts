@@ -206,6 +206,8 @@ export type EmbedTokenPayload = {
 
 export type StoryPanelDisplayMode = 'grid' | 'lines';
 
-export type BulkStoryItem = { kind: 'own'; storyId: string } | { kind: 'shared-project'; storyId: string };
-
+export const REPO_PROVIDERS = ['github', 'gitlab'] as const;
 export const BULK_ITEMS_LIMIT = 100;
+
+export type RepoProvider = (typeof REPO_PROVIDERS)[number];
+export type BulkStoryItem = { kind: 'own'; storyId: string } | { kind: 'shared-project'; storyId: string };

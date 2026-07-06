@@ -31,6 +31,7 @@ import { chartRoutes } from './routes/chart';
 import { deployRoutes } from './routes/deploy';
 import { embedStoryDownloadRoutes } from './routes/embed-story-download';
 import { githubRoutes } from './routes/github';
+import { gitlabRoutes } from './routes/gitlab';
 import { imageRoutes } from './routes/image';
 import { mcpOAuthRoutes } from './routes/mcp-oauth';
 import { slackRoutes } from './routes/slack';
@@ -211,6 +212,10 @@ app.register(githubRoutes, {
 	prefix: '/api/github',
 });
 
+app.register(gitlabRoutes, {
+	prefix: '/api/gitlab',
+});
+
 app.register(mcpOAuthRoutes, {
 	prefix: '/api/mcp-oauth',
 });
@@ -304,16 +309,21 @@ if (staticRoot) {
 		prefix: '/',
 		wildcard: false,
 	});
-
-	// SPA fallback: serve index.html for all non-API routes
-	app.setNotFoundHandler((request, reply) => {
-		if (isReservedBackendPath(request.url)) {
-			reply.status(404).send({ error: 'Not found' });
-		} else {
-			reply.sendFile('index.html');
-		}
-	});
 }
+
+// SPA fallback: serve index.html for all non-API routes.
+// In dev mode without a built frontend, redirect to the Vite dev server.
+app.setNotFoundHandler((request, reply) => {
+	if (isReservedBackendPath(request.url)) {
+		reply.status(404).send({ error: 'Not found' });
+	} else if (staticRoot) {
+		reply.sendFile('index.html');
+	} else if (isDev) {
+		reply.redirect(`http://localhost:3000${request.url}`);
+	} else {
+		reply.status(404).send({ error: 'Not found' });
+	}
+});
 
 export const startServer = async (opts: { port: number; host: string }) => {
 	if (isCloud) {
