@@ -63,9 +63,10 @@ export function buildStoryToolDescription({
 			? [
 					'Maps are embedded via <map query_id="..." map_type="..." title="..." /> with the same column attributes as display_map:',
 					'map_type="points" needs latitude_key and longitude_key, "scatter_bubble" also needs size_key,',
-					'and "choropleth" needs value_key plus region_key with region_boundaries or boundaries_url, or geometry_key.',
+					'"choropleth" needs value_key plus region_key with region_boundaries or boundaries_url, or geometry_key,',
+					'and "lines" needs origin_latitude_key, origin_longitude_key, destination_latitude_key and destination_longitude_key, or geometry_key (width_key, curved="true" and arrows="true|false" are optional).',
 					'E.g. <map query_id="..." map_type="scatter_bubble" latitude_key="lat" longitude_key="lng" size_key="revenue" title="..." />.',
-					'A point map without its coordinate columns renders a placeholder instead of the map.',
+					'A point or lines map without its coordinate columns renders a placeholder instead of the map.',
 				]
 			: []),
 		...(env.BETA_STORY_FILTERS_ENABLED ? [STORY_FILTER_DESCRIPTION] : []),

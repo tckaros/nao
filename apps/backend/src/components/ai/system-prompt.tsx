@@ -304,6 +304,19 @@ export function SystemPrompt({
 						only as a last resort.
 					</ListItem>
 				)}
+				{hasTool('display_map') && (
+					<ListItem>
+						Use display_map "lines" for connections between two places (trips, flows, links from an origin
+						to a destination): one row per line with origin and destination coordinates, a{' '}
+						<Bold>label_key</Bold> column such as origin || ' → ' || destination, and <Bold>width_key</Bold>{' '}
+						for the volume. Aggregate the flows in SQL (one row per origin and destination), exclude the
+						flows whose origin and destination are the same place, and keep the largest ones with ORDER BY
+						volume DESC and a LIMIT. Give each place a single fixed point (its centroid, or an average
+						computed per place, never per origin and destination pair), so that all the lines of a place
+						start from the same spot. Set <Bold>curved</Bold> when flows go both ways: arcs keep A→B and B→A
+						apart and show their direction with arrows.
+					</ListItem>
+				)}
 			</List>
 			<Title level={2}>SQL Query Rules</Title>
 			<List>

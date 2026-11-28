@@ -78,7 +78,8 @@ type DisplayChartMcpInput = displayChart.ChartInput & { chat_id?: string };
 const DISPLAY_MAP_DESCRIPTION =
 	'Render an interactive map embed from a previously executed query.\n\n' +
 	'USE WHEN: you have a `query_id` from `execute_sql` and want a shareable map embed URL or a ' +
-	'`<map>` block to drop into a story. Supports point maps, scatter/bubble maps, and choropleth maps.\n' +
+	'`<map>` block to drop into a story. Supports point maps, scatter/bubble maps, choropleth maps, and lines maps ' +
+	'(flows or links between two places, sized by a numeric column).\n' +
 	"SKIP WHEN: you don't have data yet → run `execute_sql` first to get geographic data. " +
 	'Also skip when you just called `create_story` or `update_story` — the story embed already ' +
 	'renders all its `<map>` blocks; calling `display_map` again would duplicate them.';
