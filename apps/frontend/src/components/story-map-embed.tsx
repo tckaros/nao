@@ -1,4 +1,4 @@
-import { buildMapPoints, MAX_MAP_POINTS, resolveMapConfig } from '@nao/shared';
+import { buildMapPoints, isPointMapType, MAX_MAP_POINTS, resolveMapConfig } from '@nao/shared';
 import { lazy, Suspense, useMemo } from 'react';
 import { mapBlockToInput } from '@nao/shared/story-segments';
 import type { MapPoint } from '@nao/shared';
@@ -13,13 +13,13 @@ export function StoryMapRender({ map, data }: { map: ParsedMapBlock; data: Recor
 	const config = useMemo(() => resolveMapConfig(data, mapBlockToInput(map)), [map, data]);
 	const points = useMemo<MapPoint[]>(() => buildMapPoints(data, config), [data, config]);
 	const visiblePoints = useMemo(() => points.slice(0, MAX_MAP_POINTS), [points]);
-	const isChoropleth = config.map_type === 'choropleth';
+	const isPointMap = isPointMapType(config.map_type);
 
-	if (!isChoropleth && config.latitude_key === config.longitude_key) {
+	if (isPointMap && config.latitude_key === config.longitude_key) {
 		return <StoryMapFallback>The latitude and longitude keys resolve to the same column.</StoryMapFallback>;
 	}
 
-	if (!isChoropleth && points.length === 0) {
+	if (isPointMap && points.length === 0) {
 		return <StoryMapFallback>No rows contain valid coordinates.</StoryMapFallback>;
 	}
 
@@ -28,7 +28,7 @@ export function StoryMapRender({ map, data }: { map: ParsedMapBlock; data: Recor
 			<Suspense fallback={<Skeleton className='w-full aspect-3/2 rounded-lg' />}>
 				<MapView points={visiblePoints} rows={data} config={config} />
 			</Suspense>
-			{!isChoropleth && points.length > MAX_MAP_POINTS && (
+			{isPointMap && points.length > MAX_MAP_POINTS && (
 				<span className='text-xs text-foreground/50'>
 					Showing the first {MAX_MAP_POINTS.toLocaleString()} of {points.length.toLocaleString()} points.
 				</span>

@@ -1,4 +1,4 @@
-import { buildMapPoints, MAX_MAP_POINTS, resolveMapConfig } from '@nao/shared';
+import { buildMapPoints, isPointMapType, MAX_MAP_POINTS, resolveMapConfig } from '@nao/shared';
 import { lazy, memo, Suspense, useMemo } from 'react';
 import { McpAppHeader } from './mcp-app-header';
 import { OpenInNaoButton } from './open-in-nao-button';
@@ -28,9 +28,9 @@ export const MapAppView = memo(function MapAppView({
 	const points = useMemo<MapPoint[]>(() => buildMapPoints(data, resolvedConfig), [data, resolvedConfig]);
 	const visiblePoints = useMemo<MapPoint[]>(() => points.slice(0, MAX_MAP_POINTS), [points]);
 
-	const isChoropleth = resolvedConfig.map_type === 'choropleth';
-	const errorMessage = mapErrorMessage(resolvedConfig, points, isChoropleth);
-	const isTruncated = !isChoropleth && points.length > MAX_MAP_POINTS;
+	const isPointMap = isPointMapType(resolvedConfig.map_type);
+	const errorMessage = mapErrorMessage(resolvedConfig, points, isPointMap);
+	const isTruncated = isPointMap && points.length > MAX_MAP_POINTS;
 
 	return (
 		<div className='flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden bg-background text-foreground'>
@@ -62,8 +62,8 @@ export const MapAppView = memo(function MapAppView({
 	);
 });
 
-function mapErrorMessage(config: McpMapEmbedStoredConfig, points: MapPoint[], isChoropleth: boolean): string | null {
-	if (isChoropleth) {
+function mapErrorMessage(config: McpMapEmbedStoredConfig, points: MapPoint[], isPointMap: boolean): string | null {
+	if (!isPointMap) {
 		return null;
 	}
 	if (config.latitude_key === config.longitude_key) {

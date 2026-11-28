@@ -1,4 +1,4 @@
-import { DEFAULT_MARKER_COLOR, DEFAULT_MARKER_RADIUS } from '@nao/shared';
+import { DEFAULT_MARKER_COLOR, DEFAULT_MARKER_RADIUS, showsLineArrows } from '@nao/shared';
 import { displayMap } from '@nao/shared/tools';
 import { ArrowRight } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -8,6 +8,7 @@ import { Button } from '../ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { Switch } from '../ui/switch';
 import type { BoundarySource } from '@nao/shared';
 import { resolveCssVariableColorHex } from '@/lib/css-color';
 
@@ -69,8 +70,10 @@ export function MapConfigEditDialog({
 
 	const isBubble = draft.map_type === 'scatter_bubble';
 	const isChoropleth = draft.map_type === 'choropleth';
-	const showRadius = !(isChoropleth || isBubble);
-	const colorLabel = isChoropleth ? 'Color scale' : isBubble ? 'Bubble' : 'Marker';
+	const isLines = draft.map_type === 'lines';
+	const showRadius = draft.map_type === 'points';
+	const showCurved = isLines && !draft.geometry_key;
+	const colorLabel = COLOR_LABELS[draft.map_type];
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -189,6 +192,39 @@ export function MapConfigEditDialog({
 						</div>
 					)}
 
+					{showCurved && (
+						<div className='flex items-center justify-between gap-3'>
+							<label htmlFor='map-curved' className='text-sm font-semibold text-foreground'>
+								Curved lines
+							</label>
+							<Switch
+								id='map-curved'
+								checked={draft.curved ?? false}
+								onCheckedChange={(checked) =>
+									setDraft((prev) => ({ ...prev, curved: checked || undefined }))
+								}
+							/>
+						</div>
+					)}
+
+					{isLines && (
+						<div className='flex items-center justify-between gap-3'>
+							<label htmlFor='map-arrows' className='text-sm font-semibold text-foreground'>
+								Direction arrows
+							</label>
+							<Switch
+								id='map-arrows'
+								checked={showsLineArrows(draft)}
+								onCheckedChange={(checked) =>
+									setDraft((prev) => ({
+										...prev,
+										arrows: checked === !!prev.curved ? undefined : checked,
+									}))
+								}
+							/>
+						</div>
+					)}
+
 					{error && <p className='text-xs text-destructive'>{error}</p>}
 
 					<DialogFooter>
@@ -215,6 +251,13 @@ export function MapConfigEditDialog({
 		</Dialog>
 	);
 }
+
+const COLOR_LABELS: Record<displayMap.MapType, string> = {
+	points: 'Marker',
+	scatter_bubble: 'Bubble',
+	choropleth: 'Color scale',
+	lines: 'Line',
+};
 
 const COLOR_SCALE_LABELS: Record<displayMap.ColorScale, string> = {
 	linear: 'Linear',

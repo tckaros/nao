@@ -64,6 +64,7 @@ const MAP_BLOCK_KINDS: Record<ParsedMapBlock['mapType'], string> = {
 	points: 'point-map',
 	scatter_bubble: 'bubble-map',
 	choropleth: 'choropleth-map',
+	lines: 'line-map',
 };
 
 export function toBlockAttributes(block: StoryBlockReference | undefined) {

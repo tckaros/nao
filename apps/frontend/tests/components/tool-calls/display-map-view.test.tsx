@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
+import { LINE_MAX_WIDTH, scaleLineWidth } from '@nao/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MapPoint } from '@nao/shared';
-import type { displayMap } from '@nao/shared/tools';
 import type { ReactNode } from 'react';
+import type { displayMap } from '@nao/shared/tools';
+import type { MapPoint } from '@nao/shared';
 
 import MapView from '@/components/tool-calls/display-map-view';
 
@@ -55,8 +56,12 @@ const { FakeMap, createdMaps } = vi.hoisted(() => {
 			return undefined;
 		}
 		addControl() {}
-		addSource() {}
-		addLayer() {}
+		hasImage() {
+			return false;
+		}
+		addImage = vi.fn();
+		addSource = vi.fn();
+		addLayer = vi.fn();
 		remove() {}
 	}
 
@@ -171,6 +176,71 @@ describe('MapView camera across viewport releases', () => {
 		act(() => lastMap().emit('style.load'));
 
 		expect(lastMap().jumpTo).toHaveBeenCalledWith(firstMap.camera);
+	});
+});
+
+describe('MapView lines', () => {
+	const LINES_CONFIG: displayMap.Input = {
+		query_id: 'query',
+		title: 'Flows',
+		map_type: 'lines',
+		origin_latitude_key: 'from_lat',
+		origin_longitude_key: 'from_lng',
+		destination_latitude_key: 'to_lat',
+		destination_longitude_key: 'to_lng',
+		width_key: 'trips',
+	};
+	const FLOWS = [
+		{ from_lat: 45.76, from_lng: 4.84, to_lat: 45.19, to_lng: 5.72, trips: 8 },
+		{ from_lat: 45.76, from_lng: 4.84, to_lat: 45.9, to_lng: 6.13, trips: 4 },
+	];
+
+	it('draws the lines with their widths under a wider hover layer, and fits them', () => {
+		renderWithQueryClient(<MapView points={[]} rows={FLOWS} config={LINES_CONFIG} customBoundaries={[]} />);
+		setNearViewport(true);
+		act(() => lastMap().emit('style.load'));
+
+		const [sourceId, source] = lastMap().addSource.mock.calls[0];
+		expect(sourceId).toBe('query-lines');
+		expect(
+			source.data.features.map((feature: { properties: { width: number } }) => feature.properties.width),
+		).toEqual([scaleLineWidth(4, 8), LINE_MAX_WIDTH]);
+		expect(lastMap().addLayer.mock.calls.map(([layer]) => [layer.id, layer.paint['line-width']])).toEqual([
+			['query-lines-line', ['get', 'width']],
+			['query-lines-hit', ['+', ['get', 'width'], 8]],
+		]);
+		expect(lastMap().fitBounds).toHaveBeenCalledWith(
+			[
+				[4.84, 45.19],
+				[6.13, 45.9],
+			],
+			expect.anything(),
+		);
+	});
+
+	it('adds an arrow layer turned along each curved line', () => {
+		renderWithQueryClient(
+			<MapView points={[]} rows={FLOWS} config={{ ...LINES_CONFIG, curved: true }} customBoundaries={[]} />,
+		);
+		setNearViewport(true);
+		act(() => lastMap().emit('style.load'));
+
+		const [, arrowSource] = lastMap().addSource.mock.calls[1];
+		const [arrowLayer] = lastMap().addLayer.mock.calls[2];
+		expect(arrowSource.data.features).toHaveLength(FLOWS.length);
+		expect(arrowLayer.layout['icon-rotate']).toEqual(['get', 'angle']);
+		expect(lastMap().addImage).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		{ variant: 'shows the width legend with width_key', config: LINES_CONFIG, labels: ['4', '8'] },
+		{ variant: 'shows no legend without width_key', config: { ...LINES_CONFIG, width_key: undefined }, labels: [] },
+	])('$variant', ({ config, labels }) => {
+		const { container } = renderWithQueryClient(
+			<MapView points={[]} rows={FLOWS} config={config} customBoundaries={[]} />,
+		);
+
+		expect([...container.querySelectorAll('.font-mono')].map((label) => label.textContent)).toEqual(labels);
 	});
 });
 

@@ -623,7 +623,17 @@ export const settingsSearchIndex: SettingsSearchEntry[] = [
 		search: { tab: 'tools' },
 		title: 'Maps',
 		description: 'Enable the agent to render query results on an interactive map.',
-		keywords: ['display map', 'choropleth', 'points', 'scatter', 'bubble', 'geospatial'],
+		keywords: [
+			'display map',
+			'choropleth',
+			'points',
+			'scatter',
+			'bubble',
+			'lines',
+			'flows',
+			'routes',
+			'geospatial',
+		],
 		adminOnly: true,
 	},
 	{

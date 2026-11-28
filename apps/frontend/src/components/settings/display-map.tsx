@@ -69,7 +69,7 @@ export function SettingsDisplayMap({ isAdmin }: SettingsDisplayMapProps) {
 			<SettingsControlRow
 				id='display-map'
 				label='Enable maps'
-				description='Enables "points", "scatter_bubble" and "choropleth" map types for the agent.'
+				description='Enables "points", "scatter_bubble", "choropleth" and "lines" map types for the agent.'
 				control={
 					<Switch
 						id='display-map'

@@ -4,31 +4,38 @@ import {
 	BUBBLE_MAX_RADIUS,
 	bubbleLegendValues,
 	buildChoroplethEntries,
+	buildChoroplethLegend,
+	buildChoroplethScale,
+	buildMapLines,
 	CHOROPLETH_MIN_OPACITY,
 	choroplethOpacity,
 	choroplethOpacityExpression,
 	choroplethTooltipKeys,
-	buildChoroplethLegend,
-	buildChoroplethScale,
 	computeMapBounds,
 	DEFAULT_MARKER_COLOR,
 	DEFAULT_MARKER_RADIUS,
 	formatCompactNumber,
 	indexBoundaries,
 	labelize,
+	LINE_ARROW_IMAGE_LENGTH,
+	LINE_ARROW_IMAGE_PIXEL_RATIO,
+	LINE_OPACITY,
+	lineArrowImage,
+	lineTooltipKeys,
+	lineWidthLegend,
+	mapLinesBounds,
+	MAX_MAP_LINES,
 	numericDomain,
 	parseNumericValue,
 	pointTooltipKeys,
 	resolveBoundary,
 	scaleBubbleRadius,
+	visibleMapLines,
 	withOpacity,
 } from '@nao/shared';
 import { useQuery } from '@tanstack/react-query';
 import { formatRgb } from 'culori';
 import { memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { DataDrivenPropertyValueSpecification } from 'maplibre-gl';
-import type { Ref } from 'react';
-import type { displayMap } from '@nao/shared/tools';
 import type {
 	ChoroplethEntry,
 	ChoroplethLegendClass,
@@ -36,11 +43,17 @@ import type {
 	ChoroplethLegendTick,
 	ChoroplethScale,
 	CustomBoundarySet,
+	LineWidthLegendItem,
+	MapBounds,
 	MapFeatureCollection as FeatureCollection,
 	MapGeometry,
+	MapLine,
 	MapPoint,
 	NumericDomain,
 } from '@nao/shared';
+import type { displayMap } from '@nao/shared/tools';
+import type { DataDrivenPropertyValueSpecification } from 'maplibre-gl';
+import type { Ref } from 'react';
 
 import { Skeleton } from '@/components/ui/skeleton';
 import { useMapSlot } from '@/hooks/use-map-slot';
@@ -55,6 +68,13 @@ const POINTS_LAYER_ID = 'query-points-circles';
 const REGIONS_SOURCE_ID = 'query-regions';
 const REGIONS_FILL_ID = 'query-regions-fill';
 const REGIONS_LINE_ID = 'query-regions-line';
+const LINES_SOURCE_ID = 'query-lines';
+const LINES_LAYER_ID = 'query-lines-line';
+const LINES_HIT_LAYER_ID = 'query-lines-hit';
+const LINE_HIT_PADDING = 8;
+const LINE_ARROWS_SOURCE_ID = 'query-line-arrows';
+const LINE_ARROWS_LAYER_ID = 'query-line-arrows';
+const LINE_ARROW_IMAGE_ID = 'nao-line-arrow';
 const POINT_STROKE_WIDTH = 1;
 const NO_BOUNDARIES: CustomBoundarySet[] = [];
 
@@ -101,6 +121,7 @@ export default memo(function MapView({
 
 	const isChoropleth = config.map_type === 'choropleth';
 	const isBubble = config.map_type === 'scatter_bubble';
+	const isLines = config.map_type === 'lines';
 
 	const { data: fetchedBoundaries = NO_BOUNDARIES } = useQuery({
 		...trpc.project.getMapBoundaries.queryOptions(),
@@ -170,15 +191,29 @@ export default memo(function MapView({
 			isBubble ? numericDomain(points.map((point) => parseNumericValue(point.row[config.size_key ?? '']))) : null,
 		[isBubble, points, config.size_key],
 	);
+	const allLines = useMemo(() => (isLines ? buildMapLines(rows, config) : []), [isLines, rows, config]);
+	const visibleLines = useMemo(() => visibleMapLines(allLines), [allLines]);
+	const lineFeatures = useMemo(() => buildLineFeatures(visibleLines, config), [visibleLines, config]);
+	const lineArrowFeatures = useMemo(() => buildLineArrowFeatures(visibleLines), [visibleLines]);
+	const lineLegend = useMemo(() => lineWidthLegend(visibleLines), [visibleLines]);
+	const lineBounds = useMemo(() => mapLinesBounds(visibleLines), [visibleLines]);
 
 	const regionsRef = useRef(regions);
 	const choroplethScaleRef = useRef(choroplethScale);
 	const sizeDomainRef = useRef(sizeDomain);
+	const lineFeaturesRef = useRef(lineFeatures);
+	const lineArrowFeaturesRef = useRef(lineArrowFeatures);
+	const lineLegendRef = useRef(lineLegend);
+	const lineBoundsRef = useRef(lineBounds);
 	configRef.current = config;
 	pointsRef.current = points;
 	regionsRef.current = regions;
 	choroplethScaleRef.current = choroplethScale;
 	sizeDomainRef.current = sizeDomain;
+	lineFeaturesRef.current = lineFeatures;
+	lineArrowFeaturesRef.current = lineArrowFeatures;
+	lineLegendRef.current = lineLegend;
+	lineBoundsRef.current = lineBounds;
 
 	useImperativeHandle(
 		ref,
@@ -189,7 +224,11 @@ export default memo(function MapView({
 					return null;
 				}
 				const currentConfig = configRef.current;
-				const domains = { choropleth: choroplethScaleRef.current, size: sizeDomainRef.current };
+				const domains = {
+					choropleth: choroplethScaleRef.current,
+					size: sizeDomainRef.current,
+					lines: lineLegendRef.current,
+				};
 				if (styleUrlRef.current === MAP_STYLE_LIGHT) {
 					map.redraw();
 					return composeLegendUrl(map.getCanvas(), currentConfig, domains, colorRef.current, type);
@@ -200,6 +239,8 @@ export default memo(function MapView({
 					domains,
 					points: pointsRef.current,
 					regions: regionsRef.current,
+					lines: lineFeaturesRef.current,
+					lineArrows: lineArrowFeaturesRef.current,
 					type,
 				});
 			},
@@ -254,6 +295,8 @@ export default memo(function MapView({
 						choroplethScaleRef.current,
 						regionsRef.current,
 					);
+				} else if (configRef.current.map_type === 'lines') {
+					setupLineLayers(map, resolved, lineFeaturesRef.current, lineArrowFeaturesRef.current);
 				} else {
 					const data = toGeoJsonPoints(pointsRef.current, configRef.current, sizeDomainRef.current);
 					setupPointLayers(map, resolved, containerRef.current, configRef.current, data);
@@ -263,6 +306,8 @@ export default memo(function MapView({
 				map.jumpTo(savedCamera);
 			} else if (configRef.current.map_type === 'choropleth') {
 				fitToCollection(map, regionsRef.current);
+			} else if (configRef.current.map_type === 'lines') {
+				fitToBounds(map, lineBoundsRef.current);
 			} else {
 				fitToPoints(map, pointsRef.current);
 			}
@@ -320,13 +365,34 @@ export default memo(function MapView({
 			fitToCollection(map, regions);
 			return;
 		}
+		if (isLines) {
+			const source = map.getSource(LINES_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+			if (!source) {
+				return;
+			}
+			source.setData(lineFeatures);
+			syncLineArrowLayer(map, colorRef.current, lineArrowFeatures);
+			fitToBounds(map, lineBounds);
+			return;
+		}
 		const source = map.getSource(POINTS_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
 		if (!source) {
 			return;
 		}
 		source.setData(toGeoJsonPoints(points, config, sizeDomain));
 		fitToPoints(map, points);
-	}, [points, regions, isChoropleth, choroplethScale, sizeDomain, config]);
+	}, [
+		points,
+		regions,
+		isChoropleth,
+		isLines,
+		lineFeatures,
+		lineArrowFeatures,
+		lineBounds,
+		choroplethScale,
+		sizeDomain,
+		config,
+	]);
 
 	const { color: configColor, radius: configRadius } = config;
 	useEffect(() => {
@@ -347,6 +413,13 @@ export default memo(function MapView({
 				);
 				return;
 			}
+			if (isLines && map.getLayer(LINES_LAYER_ID)) {
+				map.setPaintProperty(LINES_LAYER_ID, 'line-color', resolved);
+				if (map.getLayer(LINE_ARROWS_LAYER_ID)) {
+					map.setPaintProperty(LINE_ARROWS_LAYER_ID, 'icon-color', resolved);
+				}
+				return;
+			}
 			if (!isChoropleth && map.getLayer(POINTS_LAYER_ID)) {
 				map.setPaintProperty(POINTS_LAYER_ID, 'circle-color', resolved);
 				map.setPaintProperty(POINTS_LAYER_ID, 'circle-radius', pointRadiusExpression(config));
@@ -357,7 +430,7 @@ export default memo(function MapView({
 				);
 			}
 		});
-	}, [configColor, configRadius, isDark, styleId, isChoropleth, config]);
+	}, [configColor, configRadius, isDark, styleId, isChoropleth, isLines, config]);
 
 	if (initFailed) {
 		return (
@@ -381,6 +454,14 @@ export default memo(function MapView({
 					maxRadius={config.radius ?? BUBBLE_MAX_RADIUS}
 					theme={surfaceTheme}
 				/>
+			)}
+			{isLines && lineLegend.length > 0 && (
+				<LineWidthLegend color={color} items={lineLegend} theme={surfaceTheme} />
+			)}
+			{allLines.length > MAX_MAP_LINES && (
+				<span className='absolute top-2 left-2 rounded-md bg-background/90 px-2 py-1 text-xs text-foreground/60 shadow-sm'>
+					Showing the {MAX_MAP_LINES.toLocaleString()} largest of {allLines.length.toLocaleString()} lines.
+				</span>
 			)}
 		</div>
 	);
@@ -425,6 +506,59 @@ function setupPointLayers(
 			'circle-stroke-color': resolveCssColor('--background', '#ffffff', element),
 		},
 	});
+}
+
+/** A transparent, wider copy of the lines receives the hover events, since a 1px line is hard to point at. */
+function setupLineLayers(map: maplibregl.Map, color: string, data: FeatureCollection, arrows: FeatureCollection) {
+	map.addSource(LINES_SOURCE_ID, { type: 'geojson', data });
+	map.addLayer({
+		id: LINES_LAYER_ID,
+		type: 'line',
+		source: LINES_SOURCE_ID,
+		layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': ['get', 'index'] },
+		paint: { 'line-color': color, 'line-width': ['get', 'width'], 'line-opacity': LINE_OPACITY },
+	});
+	map.addLayer({
+		id: LINES_HIT_LAYER_ID,
+		type: 'line',
+		source: LINES_SOURCE_ID,
+		paint: { 'line-color': color, 'line-width': ['+', ['get', 'width'], LINE_HIT_PADDING], 'line-opacity': 0 },
+	});
+	syncLineArrowLayer(map, color, arrows);
+}
+
+/** Adds the arrow layer under the hover layer the first time a line has an arrow, and updates it afterwards. */
+function syncLineArrowLayer(map: maplibregl.Map, color: string, arrows: FeatureCollection) {
+	const source = map.getSource(LINE_ARROWS_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+	if (source) {
+		source.setData(arrows);
+		return;
+	}
+	if (arrows.features.length === 0) {
+		return;
+	}
+	if (!map.hasImage(LINE_ARROW_IMAGE_ID)) {
+		map.addImage(LINE_ARROW_IMAGE_ID, lineArrowImage(), { sdf: true, pixelRatio: LINE_ARROW_IMAGE_PIXEL_RATIO });
+	}
+	map.addSource(LINE_ARROWS_SOURCE_ID, { type: 'geojson', data: arrows });
+	map.addLayer(
+		{
+			id: LINE_ARROWS_LAYER_ID,
+			type: 'symbol',
+			source: LINE_ARROWS_SOURCE_ID,
+			layout: {
+				'icon-image': LINE_ARROW_IMAGE_ID,
+				'icon-size': ['/', ['get', 'size'], LINE_ARROW_IMAGE_LENGTH],
+				'icon-rotate': ['get', 'angle'],
+				'icon-rotation-alignment': 'map',
+				'icon-allow-overlap': true,
+				'icon-ignore-placement': true,
+				'symbol-sort-key': ['get', 'index'],
+			},
+			paint: { 'icon-color': color },
+		},
+		map.getLayer(LINES_HIT_LAYER_ID) ? LINES_HIT_LAYER_ID : undefined,
+	);
 }
 
 function setupRegionLayers(
@@ -589,6 +723,38 @@ function pointTooltipModel(point: MapPoint, config: displayMap.Input): TooltipMo
 	return { label: label != null ? String(label) : undefined, rows };
 }
 
+function lineTooltipModel(line: MapLine, config: displayMap.Input): TooltipModel {
+	const rows = lineTooltipKeys(config)
+		.filter((key) => line.row[key] != null)
+		.map((key) => ({ label: labelize(key), value: String(line.row[key]) }));
+	const label = config.label_key ? line.row[config.label_key] : undefined;
+	return { label: label != null ? String(label) : undefined, rows };
+}
+
+function buildLineFeatures(lines: MapLine[], config: displayMap.Input): FeatureCollection {
+	return {
+		type: 'FeatureCollection',
+		features: lines.map((line, index) => ({
+			type: 'Feature',
+			geometry: { type: 'MultiLineString', coordinates: line.paths },
+			properties: { index, width: line.width, tip: JSON.stringify(lineTooltipModel(line, config)) },
+		})),
+	};
+}
+
+function buildLineArrowFeatures(lines: MapLine[]): FeatureCollection {
+	return {
+		type: 'FeatureCollection',
+		features: lines.flatMap((line, index) =>
+			line.arrows.map((arrow) => ({
+				type: 'Feature' as const,
+				geometry: { type: 'Point' as const, coordinates: arrow.position },
+				properties: { index, angle: arrow.angle, size: arrow.size },
+			})),
+		),
+	};
+}
+
 function setupTooltip(
 	map: maplibregl.Map,
 	getConfig: () => displayMap.Input,
@@ -624,22 +790,24 @@ function setupTooltip(
 		tooltip.remove();
 	});
 
-	map.on('mousemove', REGIONS_FILL_ID, (event) => {
-		const raw = event.features?.[0]?.properties?.tip;
-		const model = typeof raw === 'string' ? (safeParse(raw) as TooltipModel | null) : null;
-		const content = model && buildTooltipElement(model, handlers.getColor(), handlers.getTheme());
-		if (!content) {
-			tooltip.remove();
+	for (const layerId of [REGIONS_FILL_ID, LINES_HIT_LAYER_ID]) {
+		map.on('mousemove', layerId, (event) => {
+			const raw = event.features?.[0]?.properties?.tip;
+			const model = typeof raw === 'string' ? (safeParse(raw) as TooltipModel | null) : null;
+			const content = model && buildTooltipElement(model, handlers.getColor(), handlers.getTheme());
+			if (!content) {
+				tooltip.remove();
+				map.getCanvas().style.cursor = '';
+				return;
+			}
+			map.getCanvas().style.cursor = 'pointer';
+			tooltip.setLngLat(event.lngLat).setDOMContent(content).addTo(map);
+		});
+		map.on('mouseleave', layerId, () => {
 			map.getCanvas().style.cursor = '';
-			return;
-		}
-		map.getCanvas().style.cursor = 'pointer';
-		tooltip.setLngLat(event.lngLat).setDOMContent(content).addTo(map);
-	});
-	map.on('mouseleave', REGIONS_FILL_ID, () => {
-		map.getCanvas().style.cursor = '';
-		tooltip.remove();
-	});
+			tooltip.remove();
+		});
+	}
 }
 
 function buildTooltipElement(model: TooltipModel, color: string, theme: MapSurfaceTheme): HTMLElement | null {
@@ -687,18 +855,24 @@ function buildTooltipElement(model: TooltipModel, color: string, theme: MapSurfa
 
 type LegendModel =
 	| { kind: 'choropleth'; color: string; scale: ChoroplethLegendModel }
-	| { kind: 'bubble'; color: string; domain: NumericDomain; maxRadius: number };
+	| { kind: 'bubble'; color: string; domain: NumericDomain; maxRadius: number }
+	| { kind: 'lines'; color: string; items: LineWidthLegendItem[] };
 
-function legendModel(
-	config: displayMap.Input,
-	color: string,
-	domains: { choropleth: ChoroplethScale | null; size: NumericDomain | null },
-): LegendModel | null {
+interface LegendDomains {
+	choropleth: ChoroplethScale | null;
+	size: NumericDomain | null;
+	lines: LineWidthLegendItem[];
+}
+
+function legendModel(config: displayMap.Input, color: string, domains: LegendDomains): LegendModel | null {
 	if (config.map_type === 'choropleth' && domains.choropleth) {
 		return { kind: 'choropleth', color, scale: buildChoroplethLegend(domains.choropleth) };
 	}
 	if (config.map_type === 'scatter_bubble' && domains.size) {
 		return { kind: 'bubble', color, domain: domains.size, maxRadius: config.radius ?? BUBBLE_MAX_RADIUS };
+	}
+	if (config.map_type === 'lines' && domains.lines.length > 0) {
+		return { kind: 'lines', color, items: domains.lines };
 	}
 	return null;
 }
@@ -713,7 +887,7 @@ const LEGEND_TEXT_HEIGHT = 12;
 function composeLegendUrl(
 	canvas: HTMLCanvasElement,
 	config: displayMap.Input,
-	domains: { choropleth: ChoroplethScale | null; size: NumericDomain | null },
+	domains: LegendDomains,
 	color: string,
 	type: string,
 ): string {
@@ -725,9 +899,11 @@ function composeLegendUrl(
 interface LightSnapshotOptions {
 	live: maplibregl.Map;
 	config: displayMap.Input;
-	domains: { choropleth: ChoroplethScale | null; size: NumericDomain | null };
+	domains: LegendDomains;
 	points: MapPoint[];
 	regions: FeatureCollection;
+	lines: FeatureCollection;
+	lineArrows: FeatureCollection;
 	type: string;
 }
 
@@ -740,6 +916,8 @@ function captureLightSnapshot({
 	domains,
 	points,
 	regions,
+	lines,
+	lineArrows,
 	type,
 }: LightSnapshotOptions): Promise<string | null> {
 	return new Promise((resolve) => {
@@ -795,6 +973,8 @@ function captureLightSnapshot({
 			if (config.map_type === 'choropleth') {
 				setupRegionLayers(map, colors.fill, container, domains.choropleth, regions);
 				map.setPaintProperty(REGIONS_LINE_ID, 'line-color', colors.line);
+			} else if (config.map_type === 'lines') {
+				setupLineLayers(map, colors.fill, lines, lineArrows);
 			} else {
 				setupPointLayers(map, colors.fill, container, config, toGeoJsonPoints(points, config, domains.size));
 				map.setPaintProperty(POINTS_LAYER_ID, 'circle-stroke-color', colors.stroke);
@@ -843,6 +1023,8 @@ function drawLegendOnCanvas(source: HTMLCanvasElement, legend: LegendModel): HTM
 	context.font = LEGEND_FONT;
 	if (legend.kind === 'choropleth') {
 		drawChoroplethLegend(context, cssHeight, legend);
+	} else if (legend.kind === 'lines') {
+		drawLineWidthLegend(context, cssHeight, legend);
 	} else {
 		drawBubbleLegend(context, cssHeight, legend);
 	}
@@ -980,6 +1162,41 @@ function drawBubbleLegend(
 	}
 }
 
+const LINE_LEGEND_SAMPLE_LENGTH = 24;
+const LINE_LEGEND_ROW_GAP = 4;
+
+function drawLineWidthLegend(
+	context: CanvasRenderingContext2D,
+	cssHeight: number,
+	legend: Extract<LegendModel, { kind: 'lines' }>,
+) {
+	const labelGap = 6;
+	const rowHeight = Math.max(LEGEND_TEXT_HEIGHT, ...legend.items.map((item) => item.width));
+	const labelWidth = Math.max(...legend.items.map((item) => context.measureText(item.label).width));
+	const boxWidth = LEGEND_PADDING_X * 2 + LINE_LEGEND_SAMPLE_LENGTH + labelGap + labelWidth;
+	const boxHeight =
+		LEGEND_PADDING_Y * 2 + legend.items.length * rowHeight + (legend.items.length - 1) * LINE_LEGEND_ROW_GAP;
+	const boxX = LEGEND_MARGIN;
+	const boxY = cssHeight - LEGEND_MARGIN - boxHeight;
+	drawLegendBox(context, boxX, boxY, boxWidth, boxHeight);
+
+	context.textBaseline = 'middle';
+	context.textAlign = 'left';
+	context.lineCap = 'round';
+	legend.items.forEach((item, index) => {
+		const centerY = boxY + LEGEND_PADDING_Y + index * (rowHeight + LINE_LEGEND_ROW_GAP) + rowHeight / 2;
+		const sampleX = boxX + LEGEND_PADDING_X;
+		context.beginPath();
+		context.moveTo(sampleX, centerY);
+		context.lineTo(sampleX + LINE_LEGEND_SAMPLE_LENGTH, centerY);
+		context.lineWidth = item.width;
+		context.strokeStyle = withOpacity(legend.color, LINE_OPACITY);
+		context.stroke();
+		context.fillStyle = LEGEND_TEXT_COLOR;
+		context.fillText(item.label, sampleX + LINE_LEGEND_SAMPLE_LENGTH + labelGap, centerY);
+	});
+}
+
 function ChoroplethLegend({ color, scale, theme }: { color: string; scale: ChoroplethScale; theme: MapSurfaceTheme }) {
 	const legend = buildChoroplethLegend(scale);
 	return (
@@ -1101,6 +1318,39 @@ function BubbleLegend({
 	);
 }
 
+function LineWidthLegend({
+	color,
+	items,
+	theme,
+}: {
+	color: string;
+	items: LineWidthLegendItem[];
+	theme: MapSurfaceTheme;
+}) {
+	return (
+		<div
+			className='absolute bottom-2 left-2 grid gap-1 rounded-md border border-[1px] px-2 py-1.5 text-[10px] shadow-sm backdrop-blur'
+			style={{ borderColor: withOpacity(theme.border, 0.1), backgroundColor: withOpacity(theme.background, 0.9) }}
+		>
+			{items.map((item) => (
+				<div key={item.label} className='flex items-center gap-1.5'>
+					<span
+						className='rounded-full'
+						style={{
+							width: LINE_LEGEND_SAMPLE_LENGTH,
+							height: item.width,
+							backgroundColor: withOpacity(color, LINE_OPACITY),
+						}}
+					/>
+					<span className='font-mono tabular-nums' style={{ color: theme.mutedForeground }}>
+						{item.label}
+					</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
 function useIsDark() {
 	const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
 
@@ -1156,7 +1406,11 @@ function toGeoJsonPoints(
 }
 
 function fitToPoints(map: maplibregl.Map, points: MapPoint[]) {
-	const bounds = computeMapBounds(points);
+	fitToBounds(map, computeMapBounds(points));
+}
+
+/** Uses the shared bounds, which take the short way across the antimeridian like the shared line paths. */
+function fitToBounds(map: maplibregl.Map, bounds: MapBounds | null) {
 	if (!bounds) {
 		return;
 	}

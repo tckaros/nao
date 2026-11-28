@@ -15,6 +15,7 @@ import {
 	buildMapPoints,
 	buildStoryMapBlock,
 	describeBoundarySource,
+	isPointMapType,
 	MAX_MAP_POINTS,
 	resolveMapConfig,
 } from '@nao/shared';
@@ -236,10 +237,10 @@ export const DisplayMapToolCall = ({
 	}
 
 	const mapConfig = resolvedConfig ?? config;
-	const isChoropleth = mapConfig.map_type === 'choropleth';
+	const isPointMap = isPointMapType(mapConfig.map_type);
 	const boundarySource = describeBoundarySource(mapConfig, customBoundaries);
 
-	if (!isChoropleth && mapConfig.latitude_key === mapConfig.longitude_key) {
+	if (isPointMap && mapConfig.latitude_key === mapConfig.longitude_key) {
 		return (
 			<div className='my-2 text-foreground/50 text-sm'>
 				Could not display the map because the latitude and longitude keys resolve to the same column.
@@ -247,7 +248,7 @@ export const DisplayMapToolCall = ({
 		);
 	}
 
-	if (!isChoropleth && points.length === 0) {
+	if (isPointMap && points.length === 0) {
 		return (
 			<div className='my-2 text-foreground/50 text-sm'>
 				Could not display the map because no rows contain valid coordinates.
@@ -406,7 +407,7 @@ export const DisplayMapToolCall = ({
 					)}
 				</div>
 
-				{viewMode === 'map' && !isChoropleth && points.length > MAX_MAP_POINTS && (
+				{viewMode === 'map' && isPointMap && points.length > MAX_MAP_POINTS && (
 					<span className='px-3 text-xs text-foreground/50'>
 						Showing the first {MAX_MAP_POINTS.toLocaleString()} of {points.length.toLocaleString()} points.
 					</span>
