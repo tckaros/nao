@@ -4,6 +4,7 @@ import {
 	buildChoroplethEntries,
 	buildChoroplethLegend,
 	buildChoroplethScale,
+	buildMapLines,
 	buildMapPoints,
 	CHART_FONT_STACK,
 	CHOROPLETH_MIN_OPACITY,
@@ -16,6 +17,10 @@ import {
 	DEFAULT_MARKER_RADIUS,
 	formatCompactNumber,
 	indexBoundaries,
+	LINE_MAX_WIDTH,
+	LINE_OPACITY,
+	lineWidthLegend,
+	type LineWidthLegendItem,
 	type MapGeometry,
 	MAX_MAP_POINTS,
 	type NumericDomain,
@@ -23,6 +28,7 @@ import {
 	parseNumericValue,
 	resolveMapConfig,
 	scaleBubbleRadius,
+	visibleMapLines,
 	withOpacity,
 } from '@nao/shared';
 import type { displayMap } from '@nao/shared/tools';
@@ -35,9 +41,11 @@ import { renderMapWithBrowser } from '../utils/render-map-browser';
 import { type Basemap, buildBasemapTiles } from '../utils/static-map-basemap';
 import {
 	buildChoroplethSvg,
+	buildLinesSvg,
 	buildPointsSvg,
 	collectPoints,
 	computeFit,
+	computeLinesFit,
 	project,
 	VIEW_HEIGHT,
 	VIEW_WIDTH,
@@ -69,6 +77,9 @@ async function renderMapToSvg({ config, rows, customBoundaries = [] }: RenderMap
 	const resolved = resolveMapConfig(rows, config);
 	if (resolved.map_type === 'choropleth') {
 		return renderChoroplethSvg(resolved, rows, customBoundaries);
+	}
+	if (resolved.map_type === 'lines') {
+		return renderLinesSvg(resolved, rows);
 	}
 	return renderPointsSvg(resolved, rows);
 }
@@ -179,6 +190,49 @@ async function renderPointsSvg(config: displayMap.Input, rows: Record<string, un
 				stroke='#ffffff'
 				strokeWidth={0.75}
 			/>
+		)),
+	});
+}
+
+async function renderLinesSvg(config: displayMap.Input, rows: Record<string, unknown>[]): Promise<string | null> {
+	const lines = visibleMapLines(buildMapLines(rows, config));
+	if (lines.length === 0) {
+		return null;
+	}
+	const color = config.color?.trim() || DEFAULT_MARKER_COLOR;
+	const fit = computeLinesFit(lines.flatMap((line) => line.paths));
+	if (!fit) {
+		return null;
+	}
+	const basemap = await buildBasemapTiles(fit);
+	const worldBackdrop = basemap
+		? undefined
+		: (await fetchBoundary(builtinBoundaryUrl(WORLD_BACKDROP_KEY)))?.features.map((feature) => feature.geometry);
+
+	const svg = buildLinesSvg({ lines, backdrop: worldBackdrop });
+	if (!svg) {
+		return null;
+	}
+
+	const legendItems = lineWidthLegend(lines);
+	return renderSvgMarkup({
+		basemap,
+		backdrop: svg.backdrop,
+		title: config.title,
+		legend: legendItems.length > 0 ? <LineWidthLegend color={color} items={legendItems} /> : null,
+		children: svg.lines.map((line, index) => (
+			<g key={index}>
+				<path
+					d={line.d}
+					fill='none'
+					stroke={color}
+					strokeWidth={line.width}
+					strokeOpacity={LINE_OPACITY}
+					strokeLinecap='round'
+					strokeLinejoin='round'
+				/>
+				{line.arrows && <path d={line.arrows} fill={color} />}
+			</g>
 		)),
 	});
 }
@@ -393,6 +447,57 @@ function BubbleLegend({ color, domain, maxRadius }: { color: string; domain: Num
 						<circle cx={centerX} cy={baseline - radius} r={radius} fill={withOpacity(color, 0.9)} />
 						<text x={centerX} y={baseline + 14} fontSize={10} fill='#6b7280' textAnchor='middle'>
 							{formatCompactNumber(value)}
+						</text>
+					</g>
+				);
+			})}
+		</g>
+	);
+}
+
+function LineWidthLegend({ color, items }: { color: string; items: LineWidthLegendItem[] }) {
+	const padding = 8;
+	const sampleLength = 24;
+	const labelGap = 6;
+	const rowHeight = 14;
+	const longestLabel = Math.max(...items.map((item) => item.label.length));
+	const boxWidth = padding * 2 + sampleLength + labelGap + longestLabel * LEGEND_CHAR_WIDTH;
+	const boxHeight = padding * 2 + items.length * rowHeight - (rowHeight - LINE_MAX_WIDTH);
+	const boxX = 12;
+	const boxY = VIEW_HEIGHT - 12 - boxHeight;
+	return (
+		<g fontFamily={LEGEND_FONT_FAMILY}>
+			<rect
+				x={boxX}
+				y={boxY}
+				width={boxWidth}
+				height={boxHeight}
+				rx={6}
+				fill='rgba(255,255,255,0.9)'
+				stroke='rgba(0,0,0,0.08)'
+			/>
+			{items.map((item, index) => {
+				const centerY = boxY + padding + LINE_MAX_WIDTH / 2 + index * rowHeight;
+				return (
+					<g key={item.label}>
+						<line
+							x1={boxX + padding}
+							y1={centerY}
+							x2={boxX + padding + sampleLength}
+							y2={centerY}
+							stroke={color}
+							strokeWidth={item.width}
+							strokeOpacity={LINE_OPACITY}
+							strokeLinecap='round'
+						/>
+						<text
+							x={boxX + padding + sampleLength + labelGap}
+							y={centerY}
+							fontSize={10}
+							fill='#6b7280'
+							dominantBaseline='central'
+						>
+							{item.label}
 						</text>
 					</g>
 				);

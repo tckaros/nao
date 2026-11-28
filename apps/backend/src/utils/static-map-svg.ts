@@ -1,4 +1,4 @@
-import { computeMapBounds, type MapGeometry, MERCATOR_MAX_LATITUDE } from '@nao/shared';
+import { computeMapBounds, type LineArrow, type MapGeometry, MERCATOR_MAX_LATITUDE } from '@nao/shared';
 
 export const VIEW_WIDTH = 852;
 export const VIEW_HEIGHT = 568;
@@ -40,6 +40,19 @@ export interface StaticPointsSvg {
 	circles: StaticMapCircle[];
 }
 
+export interface StaticMapLine {
+	d: string;
+	width: number;
+	arrows: string;
+	tip?: MapTip;
+}
+
+export interface StaticLinesSvg {
+	viewBox: string;
+	backdrop: string[];
+	lines: StaticMapLine[];
+}
+
 /** Builds inline-SVG geometry for a choropleth: a light backdrop plus one shaded path per region. */
 export function buildChoroplethSvg(args: {
 	regions: { geometry: MapGeometry; fill: string; tip?: MapTip }[];
@@ -75,6 +88,45 @@ export function buildPointsSvg(args: {
 		return { cx: round(cx), cy: round(cy), r: round(Math.max(1, point.radius)), tip: point.tip };
 	});
 	return { viewBox: viewBox(), backdrop: backdropPaths(args.backdrop, fit), circles };
+}
+
+/** Builds inline-SVG geometry for a lines map: a light backdrop plus one stroked path per line, in the given order. */
+export function buildLinesSvg(args: {
+	lines: { paths: Point[][]; width: number; arrows: LineArrow[]; tip?: MapTip }[];
+	backdrop?: MapGeometry[];
+}): StaticLinesSvg | null {
+	const positions = args.lines.flatMap((line) => line.paths.flat());
+	if (positions.length === 0) {
+		return null;
+	}
+	const projectPosition = ([lng, lat]: Point) => project(lng, lat);
+	const fit = computeFit(positions.map(projectPosition));
+	const lines = args.lines
+		.map((line) => ({
+			d: line.paths
+				.map((path) => polylineToPath(path.map((position) => toSvg(projectPosition(position), fit))))
+				.filter((segment) => segment.length > 0)
+				.join(' '),
+			width: round(line.width),
+			arrows: line.arrows
+				.map((arrow) => arrowToPath(toSvg(projectPosition(arrow.position), fit), arrow.angle, arrow.size))
+				.join(' '),
+			tip: line.tip,
+		}))
+		.filter((line) => line.d.length > 0);
+	if (lines.length === 0) {
+		return null;
+	}
+	return { viewBox: viewBox(), backdrop: backdropPaths(args.backdrop, fit), lines };
+}
+
+/** Same fit as {@link buildLinesSvg}, so that basemap tiles line up with the paths. Like mapLinesBounds, it keeps longitudes as given. */
+export function computeLinesFit(paths: Point[][]): Fit | null {
+	const positions = paths.flat();
+	if (positions.length === 0) {
+		return null;
+	}
+	return computeFit(positions.map(([lng, lat]) => project(lng, lat)));
 }
 
 export function longitudeUnwrapper(longitudes: number[]): (lng: number) => number {
@@ -229,6 +281,35 @@ function ringToPath(ring: Point[], fit: Fit): string {
 		return '';
 	}
 	return `${commands.join(' ')} Z`;
+}
+
+function polylineToPath(points: Point[]): string {
+	const commands: string[] = [];
+	let lastX = 0;
+	let lastY = 0;
+	points.forEach(([x, y], index) => {
+		const isLast = index === points.length - 1;
+		if (index > 0 && !isLast && Math.abs(x - lastX) < MIN_SEGMENT_PX && Math.abs(y - lastY) < MIN_SEGMENT_PX) {
+			return;
+		}
+		commands.push(`${index === 0 ? 'M' : 'L'}${round(x)},${round(y)}`);
+		lastX = x;
+		lastY = y;
+	});
+	return commands.length >= 2 ? commands.join(' ') : '';
+}
+
+/** Triangle centred on the point, pointing along the angle (degrees clockwise from east, as SVG's y axis points down). */
+function arrowToPath([centerX, centerY]: Point, angle: number, size: number): string {
+	const radians = (angle * Math.PI) / 180;
+	const alongX = (Math.cos(radians) * size) / 2;
+	const alongY = (Math.sin(radians) * size) / 2;
+	const corners: Point[] = [
+		[centerX + alongX, centerY + alongY],
+		[centerX - alongX - alongY, centerY - alongY + alongX],
+		[centerX - alongX + alongY, centerY - alongY - alongX],
+	];
+	return `M${corners.map(([x, y]) => `${round(x)},${round(y)}`).join(' L')} Z`;
 }
 
 function backdropPaths(backdrop: MapGeometry[] | undefined, fit: Fit): string[] {

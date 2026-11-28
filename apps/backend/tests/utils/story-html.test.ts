@@ -1,6 +1,13 @@
-import { DEFAULT_COLORS } from '@nao/shared';
+import { DEFAULT_COLORS, LINE_MAX_WIDTH, scaleLineWidth } from '@nao/shared';
 import { DEFAULT_DARK_STORY_THEME, DEFAULT_STORY_THEME, type StoryThemePair } from '@nao/shared/story-theme';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/utils/safe-fetch', () => ({
+	safeFetch: vi.fn(async () => {
+		throw new Error('no network in tests');
+	}),
+	parseAndValidateGeoJson: vi.fn(),
+}));
 
 import { generateStoryEmailHtml, generateStoryHtml, MAPLIBRE_CSS_URL } from '../../src/utils/story-html';
 
@@ -21,6 +28,17 @@ describe('generateStoryHtml incomplete maps', () => {
 		expect(html).not.toContain('Data unavailable');
 	});
 
+	it('names the missing line columns of a lines map', async () => {
+		const html = await generateStoryHtml(
+			{ title: 'Story', code: '<map query_id="q1" map_type="lines" origin_latitude_key="a" title="Flows" />' },
+			null,
+		);
+
+		expect(html).toContain(
+			'missing origin_longitude_key, destination_latitude_key, destination_longitude_key (query: q1)',
+		);
+	});
+
 	it('loads no map library when every map is a placeholder', async () => {
 		const html = await generateStoryHtml(
 			{ title: 'Story', code: '<map query_id="q1" map_type="points" title="Stores" />' },
@@ -30,6 +48,97 @@ describe('generateStoryHtml incomplete maps', () => {
 		expect(html).not.toContain(MAPLIBRE_CSS_URL);
 	});
 });
+
+describe('generateStoryHtml lines maps', () => {
+	const LINES_BLOCK =
+		'<map query_id="q1" map_type="lines" origin_latitude_key="from_lat" origin_longitude_key="from_lng" destination_latitude_key="to_lat" destination_longitude_key="to_lng" width_key="trips" label_key="route" title="Flows" />';
+	const flowData = {
+		q1: {
+			columns: ['route', 'from_lat', 'from_lng', 'to_lat', 'to_lng', 'trips'],
+			data: [
+				{ route: 'Lyon → Grenoble', from_lat: 45.76, from_lng: 4.84, to_lat: 45.19, to_lng: 5.72, trips: 8 },
+				{ route: 'Lyon → Annecy', from_lat: 45.76, from_lng: 4.84, to_lat: 45.9, to_lng: 6.13, trips: 4 },
+			],
+		},
+	};
+
+	it('hands the MapLibre script the lines, lightest first, with their widths and popups', async () => {
+		const html = await generateStoryHtml({ title: 'Story', code: LINES_BLOCK }, flowData);
+
+		const payload = JSON.parse(decodeAttribute(html.match(/data-map="([^"]*)"/)![1]));
+		expect(payload.type).toBe('lines');
+		expect(payload.lines.map((line: { width: number; label: string }) => [line.label, line.width])).toEqual([
+			['Lyon → Annecy', scaleLineWidth(4, 8)],
+			['Lyon → Grenoble', LINE_MAX_WIDTH],
+		]);
+	});
+
+	it('draws one stroked path per line in the static SVG', async () => {
+		const html = await generateStoryHtml({ title: 'Story', code: LINES_BLOCK }, flowData, null, [], {
+			staticMaps: true,
+		});
+
+		const strokeWidths = [...html.matchAll(/<path d="[^"]+" fill="none" stroke="[^"]+" stroke-width="([\d.]+)"/g)];
+		expect(strokeWidths.map((match) => Number(match[1]))).toEqual([scaleLineWidth(4, 8), LINE_MAX_WIDTH]);
+		expect(html).toContain('data-leaflet=');
+	});
+
+	it.each([
+		{ variant: 'straight lines', attributes: '', arrowCount: 0 },
+		{ variant: 'curved lines', attributes: ' curved="true"', arrowCount: 2 },
+		{ variant: 'straight lines with arrows', attributes: ' arrows="true"', arrowCount: 2 },
+	])(
+		'draws an arrow on each line of $variant in both the MapLibre payload and the static SVG',
+		async ({ attributes, arrowCount }) => {
+			const code = LINES_BLOCK.replace(' title="Flows"', `${attributes} title="Flows"`);
+
+			const live = await generateStoryHtml({ title: 'Story', code }, flowData);
+			const payload = JSON.parse(decodeAttribute(live.match(/data-map="([^"]*)"/)![1]));
+			const staticHtml = await generateStoryHtml({ title: 'Story', code }, flowData, null, [], {
+				staticMaps: true,
+			});
+
+			expect(payload.lines.flatMap((line: { arrows: unknown[] }) => line.arrows)).toHaveLength(arrowCount);
+			expect(staticHtml.match(/<path d="M[^"]+ Z" fill="[^"]+"/g) ?? []).toHaveLength(arrowCount);
+		},
+	);
+});
+
+describe('generateStoryHtml lines spanning more than half the globe', () => {
+	it('keeps every line and arrow of a London hub inside the static SVG', async () => {
+		const code =
+			'<map query_id="q1" map_type="lines" origin_latitude_key="from_lat" origin_longitude_key="from_lng" destination_latitude_key="to_lat" destination_longitude_key="to_lng" arrows="true" title="Hub" />';
+		const london = { from_lat: 51.51, from_lng: -0.13 };
+		const data = {
+			q1: {
+				columns: ['from_lat', 'from_lng', 'to_lat', 'to_lng'],
+				data: [
+					{ ...london, to_lat: 35.68, to_lng: 139.69 },
+					{ ...london, to_lat: -33.87, to_lng: 151.21 },
+					{ ...london, to_lat: 34.05, to_lng: -118.24 },
+				],
+			},
+		};
+
+		const html = await generateStoryHtml({ title: 'Story', code }, data, null, [], { staticMaps: true });
+
+		const [, width] = html.match(/viewBox="0 0 ([\d.]+) [\d.]+"/)!.map(Number);
+		const shapes = [...html.matchAll(/<path d="(M[^"]+)" fill="(?:none|[^"]+)"/g)].map((match) => match[1]);
+		const xs = shapes.flatMap((d) => [...d.matchAll(/[ML]([-\d.]+),/g)].map((match) => Number(match[1])));
+		expect(shapes).toHaveLength(6);
+		expect(Math.min(...xs)).toBeGreaterThanOrEqual(0);
+		expect(Math.max(...xs)).toBeLessThanOrEqual(width);
+	});
+});
+
+function decodeAttribute(value: string): string {
+	return value
+		.replace(/&quot;/g, '"')
+		.replace(/&#x27;/g, "'")
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&amp;/g, '&');
+}
 
 describe('generateStoryHtml grid flattening', () => {
 	it.each([

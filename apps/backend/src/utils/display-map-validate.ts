@@ -1,7 +1,11 @@
 import {
 	buildChoroplethEntries,
+	buildMapLines,
 	buildMapPoints,
+	countDroppedLineRows,
 	indexBoundaries,
+	type LineDropCounts,
+	MAX_MAP_LINES,
 	MAX_MAP_POINTS,
 	normalizeRegionId,
 	parseNumericValue,
@@ -18,6 +22,9 @@ export async function validateMapConfig(input: displayMap.Input, queryResult: Qu
 	if (input.map_type === 'choropleth') {
 		const result = await buildChoroplethResult(input, queryResult);
 		return result.success ? withWarning(result, logScaleWarning(input, queryResult)) : result;
+	}
+	if (input.map_type === 'lines') {
+		return buildLinesResult(input, queryResult);
 	}
 	return buildPointResult(input, queryResult);
 }
@@ -110,6 +117,115 @@ function buildPointResult(input: displayMap.Input, queryResult: QueryResult): di
 		dropped_row_count: queryResult.data.length - points.length,
 		...(warnings.length > 0 && { warning: warnings.join(' ') }),
 	};
+}
+
+const LINE_SEGMENT_KEYS = [
+	'origin_latitude_key',
+	'origin_longitude_key',
+	'destination_latitude_key',
+	'destination_longitude_key',
+] as const;
+
+function buildLinesResult(input: displayMap.Input, queryResult: QueryResult): displayMap.Output {
+	const sourceError = linesSourceError(input);
+	if (sourceError) {
+		return { _version: '1', success: false, error: sourceError };
+	}
+
+	const config = resolveLineColumns(input, queryResult.columns);
+	const sourceColumns = config.geometry_key
+		? [config.geometry_key]
+		: LINE_SEGMENT_KEYS.map((key) => config[key] ?? '');
+	const missingColumn = sourceColumns.find((column) => !queryResult.columns.includes(column));
+	if (missingColumn) {
+		return { _version: '1', success: false, error: columnNotFound(missingColumn, queryResult.columns) };
+	}
+
+	const lines = buildMapLines(queryResult.data, config);
+	const droppedReasons = countDroppedLineRows(queryResult.data, config);
+	if (lines.length === 0) {
+		return { _version: '1', success: false, error: noLinesError(config, droppedReasons) };
+	}
+
+	const warnings = linesWarnings(input, queryResult.columns, lines.length, droppedReasons);
+	return {
+		_version: '1',
+		success: true,
+		line_count: lines.length,
+		dropped_row_count: queryResult.data.length - lines.length,
+		...(Object.keys(droppedReasons).length > 0 && { dropped_reasons: droppedReasons }),
+		...(warnings.length > 0 && { warning: warnings.join(' ') }),
+	};
+}
+
+function linesSourceError(input: displayMap.Input): string | null {
+	const segmentKeyCount = LINE_SEGMENT_KEYS.filter((key) => input[key]).length;
+	if (input.geometry_key && segmentKeyCount > 0) {
+		return 'A "lines" map takes either the origin/destination columns or geometry_key, not both.';
+	}
+	if (!input.geometry_key && segmentKeyCount < LINE_SEGMENT_KEYS.length) {
+		return `${LINE_SEGMENT_KEYS.join(', ')} are required for "lines" maps, unless geometry_key is set.`;
+	}
+	return null;
+}
+
+function resolveLineColumns(input: displayMap.Input, columns: string[]): displayMap.Input {
+	const resolve = (key: string | undefined) => key && resolveColumnName(columns, key);
+	return {
+		...input,
+		origin_latitude_key: resolve(input.origin_latitude_key),
+		origin_longitude_key: resolve(input.origin_longitude_key),
+		destination_latitude_key: resolve(input.destination_latitude_key),
+		destination_longitude_key: resolve(input.destination_longitude_key),
+		geometry_key: resolve(input.geometry_key),
+		width_key: resolve(input.width_key),
+	};
+}
+
+function noLinesError(config: displayMap.Input, droppedReasons: LineDropCounts): string {
+	if (config.geometry_key) {
+		return 'No rows contain a valid GeoJSON LineString or MultiLineString, so there is nothing to draw.';
+	}
+	const reasons = [
+		droppedReasons.invalid_coordinates &&
+			`${droppedReasons.invalid_coordinates} with missing or invalid coordinates`,
+		droppedReasons.same_origin_destination &&
+			`${droppedReasons.same_origin_destination} with the same origin and destination`,
+	].filter(Boolean);
+	return `No rows contain valid decimal-degree origin and destination coordinates that differ, so there is nothing to draw (rows: ${reasons.join(', ')}).`;
+}
+
+function linesWarnings(
+	input: displayMap.Input,
+	columns: string[],
+	lineCount: number,
+	droppedReasons: LineDropCounts,
+): string[] {
+	const warnings: string[] = [];
+	const missingPopupKeys = [input.label_key, input.width_key, ...(input.tooltip_keys ?? [])]
+		.filter((key): key is string => !!key)
+		.filter((key) => !columns.includes(resolveColumnName(columns, key)));
+	if (missingPopupKeys.length > 0) {
+		warnings.push(
+			`Column(s) ${quoteList(missingPopupKeys)} not found in the query result. Available columns: ${columns.join(', ')}.`,
+		);
+	}
+	if (droppedReasons.same_origin_destination) {
+		warnings.push(
+			`${droppedReasons.same_origin_destination} row(s) have the same origin and destination and are not drawn — mention it to the user, or exclude them in SQL.`,
+		);
+	}
+	if (lineCount > MAX_MAP_LINES) {
+		warnings.push(
+			`The map only draws the ${MAX_MAP_LINES} heaviest of ${lineCount} lines — mention this to the user, or aggregate in SQL and keep the top flows (ORDER BY the width column DESC LIMIT ${MAX_MAP_LINES}).`,
+		);
+	}
+	if (input.curved && input.geometry_key) {
+		warnings.push(
+			'curved only applies to the origin/destination columns, so the geometry_key lines are drawn as given.',
+		);
+	}
+	return warnings;
 }
 
 async function buildChoroplethResult(input: displayMap.Input, queryResult: QueryResult): Promise<displayMap.Output> {

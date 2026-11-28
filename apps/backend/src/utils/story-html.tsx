@@ -5,6 +5,7 @@ import {
 	buildChoroplethEntries,
 	buildChoroplethLegend,
 	buildChoroplethScale,
+	buildMapLines,
 	buildMapPoints,
 	CHOROPLETH_MIN_OPACITY,
 	type ChoroplethLegendModel,
@@ -20,9 +21,20 @@ import {
 	indexBoundaries,
 	type KpiComparison,
 	labelize,
+	LINE_ARROW_IMAGE_LENGTH,
+	LINE_ARROW_IMAGE_PIXEL_RATIO,
+	LINE_OPACITY,
+	type LineArrow,
+	lineArrowImage,
+	lineTooltipKeys,
+	lineWidthLegend,
+	type LineWidthLegendItem,
+	type LngLat,
 	MAP_BOUNDARY_URLS,
 	type MapFeatureCollection,
 	type MapGeometry,
+	type MapLine,
+	mapLinesBounds,
 	type MapPoint,
 	MAX_MAP_POINTS,
 	normalizeRegionId,
@@ -34,6 +46,7 @@ import {
 	resolveDataKey,
 	resolveMapConfig,
 	scaleBubbleRadius,
+	visibleMapLines,
 	withOpacity,
 } from '@nao/shared';
 import { applyBreakdown } from '@nao/shared/chart-series';
@@ -69,9 +82,11 @@ import { parseAndValidateGeoJson, safeFetch } from './safe-fetch';
 import { type Basemap, basemapByteBudgetForCount, buildBasemapTiles } from './static-map-basemap';
 import {
 	buildChoroplethSvg,
+	buildLinesSvg,
 	buildPointsSvg,
 	collectPoints,
 	computeFit,
+	computeLinesFit,
 	type Fit,
 	longitudeUnwrapper,
 	type MapTip,
@@ -338,8 +353,7 @@ async function prefetchCustomBoundaries(
 		if (map.boundariesUrl) {
 			boundaryUrlsNeeded.add(map.boundariesUrl);
 		}
-		const isPointMap = map.mapType === 'points' || map.mapType === 'scatter_bubble';
-		if (staticMaps && isPointMap) {
+		if (staticMaps && map.mapType !== 'choropleth') {
 			customKeysNeeded.add(WORLD_BACKDROP_KEY);
 		}
 	}
@@ -420,6 +434,9 @@ function computeMapFit(
 			return null;
 		}
 		return computeFit(collectPoints(geometries));
+	}
+	if (config.map_type === 'lines') {
+		return computeLinesFit(visibleMapLines(buildMapLines(rows, config)).flatMap((line) => line.paths));
 	}
 	const points = buildMapPoints(rows, config).slice(0, MAX_MAP_POINTS);
 	if (points.length === 0) {
@@ -907,7 +924,110 @@ function MapBlock({ map, queryData }: { map: ParsedMapBlock; queryData: QueryDat
 	if (config.map_type === 'choropleth') {
 		return <ChoroplethMapBlock map={map} config={config} rows={rows} dateFormat={dateFormat} />;
 	}
+	if (config.map_type === 'lines') {
+		return <LineMapBlock map={map} config={config} rows={rows} dateFormat={dateFormat} />;
+	}
 	return <PointMapBlock map={map} config={config} rows={rows} dateFormat={dateFormat} />;
+}
+
+function LineMapBlock({
+	map,
+	config,
+	rows,
+	dateFormat,
+}: {
+	map: ParsedMapBlock;
+	config: displayMap.Input;
+	rows: Record<string, unknown>[];
+	dateFormat: DateFormatSettings;
+}) {
+	const inlinedBoundaries = useContext(InlinedBoundariesContext);
+	const staticMaps = useContext(StaticMapsContext);
+	const lines = visibleMapLines(buildMapLines(rows, config));
+	if (lines.length === 0) {
+		return <Placeholder label={map.title || 'Map'} message='No valid lines' />;
+	}
+
+	const payload = buildLinePayload(lines, config, dateFormat);
+	const legend =
+		payload.legend.length > 0 ? <LineWidthLegendOverlay color={payload.color} items={payload.legend} /> : null;
+	if (staticMaps) {
+		return <StaticLineMap map={map} payload={payload} inlinedBoundaries={inlinedBoundaries} legend={legend} />;
+	}
+	return <MapShell title={map.title} payload={payload} legend={legend} />;
+}
+
+function StaticLineMap({
+	map,
+	payload,
+	inlinedBoundaries,
+	legend,
+}: {
+	map: ParsedMapBlock;
+	payload: LinePayload;
+	inlinedBoundaries: InlinedBoundaries;
+	legend: React.ReactNode;
+}) {
+	const emailSink = useContext(EmailImageSinkContext);
+	const basemap = useContext(BasemapContext).get(mapBasemapKey(map));
+	const world = basemap
+		? undefined
+		: (inlinedBoundaries.get(WORLD_BACKDROP_KEY)?.geojson as MapFeatureCollection | undefined);
+	const svg = buildLinesSvg({
+		lines: payload.lines.map((line) => ({ ...line, tip: toMapTip(line.label, line.rows) })),
+		backdrop: world?.features.map((feature) => feature.geometry),
+	});
+	if (!svg) {
+		return <Placeholder label={map.title || 'Map'} message='Could not render map' />;
+	}
+	if (emailSink) {
+		const stroke = escapeSvgAttr(payload.color);
+		const shapes = svg.lines
+			.map(
+				(line) =>
+					`<path d="${line.d}" fill="none" stroke="${stroke}" stroke-width="${line.width}" stroke-opacity="${payload.opacity}" stroke-linecap="round" stroke-linejoin="round"/>` +
+					(line.arrows ? `<path d="${line.arrows}" fill="${stroke}"/>` : ''),
+			)
+			.join('');
+		return (
+			<EmailMapImage
+				title={map.title}
+				svg={buildStaticMapSvg(svg.viewBox, svg.backdrop, basemap, shapes)}
+				sink={emailSink}
+			/>
+		);
+	}
+	const leafletPayload: LeafletPayload = {
+		type: 'lines',
+		color: payload.color,
+		opacity: payload.opacity,
+		lines: payload.lines,
+	};
+	return (
+		<StaticMapShell
+			title={map.title}
+			viewBox={svg.viewBox}
+			backdrop={svg.backdrop}
+			basemap={basemap}
+			legend={legend}
+			leafletPayload={leafletPayload}
+		>
+			{svg.lines.map((line, index) => (
+				<g key={index} data-tip={line.tip ? JSON.stringify(line.tip) : undefined}>
+					<path
+						d={line.d}
+						fill='none'
+						stroke={payload.color}
+						strokeWidth={line.width}
+						strokeOpacity={payload.opacity}
+						strokeLinecap='round'
+						strokeLinejoin='round'
+					/>
+					{line.arrows && <path d={line.arrows} fill={payload.color} />}
+				</g>
+			))}
+		</StaticMapShell>
+	);
 }
 
 function PointMapBlock({
@@ -1047,8 +1167,10 @@ interface LeafletPoint {
 interface LeafletPayload {
 	type: displayMap.MapType;
 	color: string;
+	opacity?: number;
 	regions?: LeafletChoroplethRegion[];
 	points?: LeafletPoint[];
+	lines?: LinePayloadLine[];
 }
 
 function toMapTip(label?: string, rows?: [string, string][]): MapTip | undefined {
@@ -1299,7 +1421,7 @@ function MapShell({
 	legend,
 }: {
 	title?: string;
-	payload: PointPayload | ChoroplethPayload;
+	payload: PointPayload | ChoroplethPayload | LinePayload;
 	legend: React.ReactNode;
 }) {
 	const palette = useContext(PaletteContext);
@@ -1349,6 +1471,64 @@ interface ChoroplethPayload {
 		rows?: [string, string][];
 		dot?: string;
 	}[];
+}
+
+interface LinePayloadLine {
+	paths: LngLat[][];
+	width: number;
+	arrows: LineArrow[];
+	label?: string;
+	rows?: [string, string][];
+}
+
+export interface LinePayload {
+	type: 'lines';
+	color: string;
+	opacity: number;
+	legend: LineWidthLegendItem[];
+	bounds: [[number, number], [number, number]] | null;
+	lines: LinePayloadLine[];
+}
+
+/** The `data-map` payload `renderMapScript` draws for a lines map, also used by the headless PNG renderer. */
+export function buildLinePayload(
+	lines: MapLine[],
+	config: displayMap.Input,
+	dateFormat: DateFormatSettings,
+): LinePayload {
+	const tooltipKeys = lineTooltipKeys(config);
+	const bounds = mapLinesBounds(lines);
+	return {
+		type: 'lines',
+		color: config.color?.trim() || DEFAULT_MARKER_COLOR,
+		opacity: LINE_OPACITY,
+		legend: lineWidthLegend(lines),
+		bounds: bounds
+			? [
+					[bounds.west, bounds.south],
+					[bounds.east, bounds.north],
+				]
+			: null,
+		lines: lines.map((line) => ({
+			paths: line.paths,
+			width: line.width,
+			arrows: line.arrows,
+			...lineTooltip(line.row, config.label_key, tooltipKeys, dateFormat),
+		})),
+	};
+}
+
+function lineTooltip(
+	row: Record<string, unknown>,
+	labelKey: string | undefined,
+	tooltipKeys: string[],
+	dateFormat: DateFormatSettings,
+): Pick<LinePayloadLine, 'label' | 'rows'> {
+	const label = labelKey && row[labelKey] != null ? formatCellValue(row[labelKey], dateFormat) : undefined;
+	const rows = tooltipKeys
+		.filter((key) => row[key] != null)
+		.map((key): [string, string] => [labelize(key, dateFormat), formatCellValue(row[key], dateFormat)]);
+	return { ...(label !== undefined && { label }), ...(rows.length > 0 && { rows }) };
 }
 
 function buildPointPayload(points: MapPoint[], config: displayMap.Input, dateFormat: DateFormatSettings): PointPayload {
@@ -1560,6 +1740,26 @@ function BubbleLegendOverlay({
 	);
 }
 
+function LineWidthLegendOverlay({ color, items }: { color: string; items: LineWidthLegendItem[] }) {
+	return (
+		<div style={{ ...LEGEND_BOX_STYLE, display: 'grid', gap: 4, color: '#6b7280' }}>
+			{items.map((item) => (
+				<div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+					<span
+						style={{
+							width: 24,
+							height: item.width,
+							borderRadius: 999,
+							background: withOpacity(color, LINE_OPACITY),
+						}}
+					/>
+					<span>{item.label}</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
 const LEGEND_BOX_STYLE: React.CSSProperties = {
 	position: 'absolute',
 	bottom: 8,
@@ -1709,7 +1909,20 @@ function renderTooltipScript(datePattern: string, seriesColors: string[]): strin
 export function renderMapScript(): string {
 	return MAP_INIT_SCRIPT_TEMPLATE.replace('__MAP_STYLE_URL__', JSON.stringify(MAP_STYLE_URL))
 		.replace('__MAPLIBRE_ESM_URL__', JSON.stringify(MAPLIBRE_ESM_URL))
-		.replace('__MAPLIBRE_WORKER_URL__', JSON.stringify(MAPLIBRE_WORKER_URL));
+		.replace('__MAPLIBRE_WORKER_URL__', JSON.stringify(MAPLIBRE_WORKER_URL))
+		.replace('__LINE_ARROW_IMAGE__', JSON.stringify(lineArrowScriptImage()));
+}
+
+/** The SDF arrow as its alpha channel in base64: the script rebuilds the white RGBA image from it. */
+function lineArrowScriptImage() {
+	const image = lineArrowImage();
+	const alpha = Buffer.from(image.data.filter((_, index) => index % 4 === 3));
+	return {
+		size: image.width,
+		alpha: alpha.toString('base64'),
+		pixelRatio: LINE_ARROW_IMAGE_PIXEL_RATIO,
+		length: LINE_ARROW_IMAGE_LENGTH,
+	};
 }
 
 function renderStaticMapScript(): string {
@@ -1815,6 +2028,16 @@ const LEAFLET_MAP_SCRIPT_TEMPLATE = `
 		var html=tooltipHtml(label,rows);
 		if(html)layer.bindTooltip(html,{sticky:true,direction:'top',className:'nao-map-ltip',opacity:1});
 	}
+	function arrowIcon(arrow,color){
+		var ns='http://www.w3.org/2000/svg',size=arrow.size;
+		var svg=document.createElementNS(ns,'svg');
+		svg.setAttribute('width',size);svg.setAttribute('height',size);svg.setAttribute('viewBox','0 0 '+size+' '+size);
+		svg.style.transform='rotate('+arrow.angle+'deg)';svg.style.display='block';
+		var path=document.createElementNS(ns,'path');
+		path.setAttribute('d','M'+size+','+size/2+' L0,'+size+' L0,0 Z');path.setAttribute('fill',color);
+		svg.appendChild(path);
+		return L.divIcon({className:'',html:svg,iconSize:[size,size],iconAnchor:[size/2,size/2]});
+	}
 	document.querySelectorAll('.nao-map[data-leaflet]').forEach(function(container){
 		var cfg;try{cfg=JSON.parse(container.getAttribute('data-leaflet'));}catch(e){return;}
 		var canvas=document.createElement('div');
@@ -1830,6 +2053,18 @@ const LEAFLET_MAP_SCRIPT_TEMPLATE = `
 				var layer=L.geoJSON(region.geometry,{style:{color:'#ffffff',weight:0.8,opacity:0.7,fillColor:region.fill,fillOpacity:1}});
 				bindTip(layer,region.label,region.rows);
 				layer.addTo(map);layers.push(layer);
+			});
+		}else if(cfg.type==='lines'){
+			(cfg.lines||[]).forEach(function(line){
+				var latLngs=line.paths.map(function(path){return path.map(function(p){return [p[1],p[0]];});});
+				var layer=L.polyline(latLngs,{color:cfg.color,weight:line.width,opacity:cfg.opacity,lineCap:'round',lineJoin:'round'});
+				bindTip(layer,line.label,line.rows);
+				layer.addTo(map);layers.push(layer);
+			});
+			(cfg.lines||[]).forEach(function(line){
+				(line.arrows||[]).forEach(function(arrow){
+					L.marker([arrow.position[1],arrow.position[0]],{icon:arrowIcon(arrow,cfg.color),interactive:false,keyboard:false}).addTo(map);
+				});
 			});
 		}else{
 			(cfg.points||[]).forEach(function(point){
@@ -2070,6 +2305,7 @@ const TOOLTIP_SCRIPT_TEMPLATE = `
 const MAP_INIT_SCRIPT_TEMPLATE = `
 function naoInitMaps(maplibregl){
 	var STYLE_URL=__MAP_STYLE_URL__;
+	var LINE_ARROW=__LINE_ARROW_IMAGE__;
 	var containers=document.querySelectorAll('.nao-map');
 	if(!containers.length){window.__naoMapsReady=true;window.__naoMapsRendered=0;return;}
 	var pending=containers.length;
@@ -2155,6 +2391,44 @@ function naoInitMaps(maplibregl){
 		map.on('mouseleave','query-regions-fill',function(){map.getCanvas().style.cursor='';popup.remove();});
 		return features.length;
 	}
+	function addLineArrows(map,cfg){
+		var features=[];
+		cfg.lines.forEach(function(line,i){(line.arrows||[]).forEach(function(arrow){
+			features.push({type:'Feature',geometry:{type:'Point',coordinates:arrow.position},properties:{index:i,angle:arrow.angle,size:arrow.size}});
+		});});
+		if(!features.length)return;
+		if(!map.hasImage('nao-line-arrow')){
+			var alpha=atob(LINE_ARROW.alpha),data=new Uint8Array(alpha.length*4);
+			for(var p=0;p<alpha.length;p++){data[p*4]=255;data[p*4+1]=255;data[p*4+2]=255;data[p*4+3]=alpha.charCodeAt(p);}
+			map.addImage('nao-line-arrow',{width:LINE_ARROW.size,height:LINE_ARROW.size,data:data},{sdf:true,pixelRatio:LINE_ARROW.pixelRatio});
+		}
+		map.addSource('query-line-arrows',{type:'geojson',data:{type:'FeatureCollection',features:features}});
+		map.addLayer({id:'query-line-arrows',type:'symbol',source:'query-line-arrows',layout:{'icon-image':'nao-line-arrow','icon-size':['/',['get','size'],LINE_ARROW.length],'icon-rotate':['get','angle'],'icon-rotation-alignment':'map','icon-allow-overlap':true,'icon-ignore-placement':true,'symbol-sort-key':['get','index']},paint:{'icon-color':cfg.color}});
+	}
+	function renderLines(map,cfg){
+		var features=cfg.lines.map(function(line,i){
+			return {type:'Feature',geometry:{type:'MultiLineString',coordinates:line.paths},properties:{index:i,width:line.width}};
+		});
+		map.addSource('query-lines',{type:'geojson',data:{type:'FeatureCollection',features:features}});
+		map.addLayer({id:'query-lines-line',type:'line',source:'query-lines',layout:{'line-cap':'round','line-join':'round','line-sort-key':['get','index']},paint:{'line-color':cfg.color,'line-width':['get','width'],'line-opacity':cfg.opacity}});
+		addLineArrows(map,cfg);
+		map.addLayer({id:'query-lines-hit',type:'line',source:'query-lines',paint:{'line-color':cfg.color,'line-width':['+',['get','width'],8],'line-opacity':0}});
+		try{
+			if(cfg.bounds){map.fitBounds(cfg.bounds,{padding:40,maxZoom:14,duration:0});}
+			else{var bounds=new maplibregl.LngLatBounds();cfg.lines.forEach(function(line){extendBounds(bounds,line.paths);});if(!bounds.isEmpty())map.fitBounds(bounds,{padding:40,maxZoom:14,duration:0});}
+		}catch(e){}
+		var popup=new maplibregl.Popup({closeButton:false,closeOnClick:false,className:'map-tooltip',offset:12,maxWidth:'280px'});
+		map.on('mousemove','query-lines-hit',function(e){
+			var feature=e.features&&e.features[0];if(!feature)return;
+			var line=cfg.lines[feature.properties.index];if(!line)return;
+			var html=buildPopup(line,cfg.color);
+			if(!html){popup.remove();return;}
+			map.getCanvas().style.cursor='pointer';
+			popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+		});
+		map.on('mouseleave','query-lines-hit',function(){map.getCanvas().style.cursor='';popup.remove();});
+		return features.length;
+	}
 	containers.forEach(function(container){
 		var raw=container.getAttribute('data-map');
 		var cfg;try{cfg=JSON.parse(raw);}catch(e){done();return;}
@@ -2171,6 +2445,9 @@ function naoInitMaps(maplibregl){
 		if(cfg.type==='choropleth'){
 			var ready=cfg.inlineGeoJson?Promise.resolve(cfg.inlineGeoJson):cfg.boundaryUrl?fetch(cfg.boundaryUrl).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}):Promise.resolve(null);
 				ready.then(function(boundaries){var count=renderChoropleth(map,cfg,boundaries);map.once('idle',function(){settle(count>0);});});
+			}else if(cfg.type==='lines'){
+				var lineCount=renderLines(map,cfg);
+				map.once('idle',function(){settle(lineCount>0);});
 			}else{
 				var count=renderPoints(map,cfg);
 				map.once('idle',function(){settle(count>0);});

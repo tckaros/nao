@@ -15,13 +15,16 @@ vi.mock('../../src/utils/safe-fetch', () => ({
 	parseAndValidateGeoJson: vi.fn(),
 }));
 
+import { MAX_MAP_LINES } from '@nao/shared';
+import type { displayMap } from '@nao/shared/tools';
+
 import { createDisplayMapTool } from '../../src/agents/tools/display-map';
 import * as chatQueries from '../../src/queries/chat.queries';
 import type { QueryResult } from '../../src/types/tools';
 import * as safeFetchModule from '../../src/utils/safe-fetch';
 import { createToolContext, executeTool } from '../helpers/tool-context';
 
-type MapOutput = { success: boolean; error?: string; warning?: string };
+type MapOutput = displayMap.Output;
 
 const input = {
 	query_id: 'q1',
@@ -268,6 +271,125 @@ describe('display_map execute — choropleth with boundaries_url', () => {
 			};
 			expect(schema.safeParse({ ...choroplethInput, color_scale: 'sqrt' }).success).toBe(false);
 		});
+	});
+});
+
+describe('display_map execute — lines', () => {
+	const segmentKeys = {
+		origin_latitude_key: 'from_lat',
+		origin_longitude_key: 'from_lng',
+		destination_latitude_key: 'to_lat',
+		destination_longitude_key: 'to_lng',
+	};
+	const flowColumns = ['from_lat', 'from_lng', 'to_lat', 'to_lng', 'trips'];
+	const flow = { from_lat: 45.76, from_lng: 4.84, to_lat: 45.19, to_lng: 5.72, trips: 12 };
+	const linesInput = { query_id: 'q1', map_type: 'lines' as const, title: 'Flows' };
+
+	function executeLines(overrides: Record<string, unknown>, data: Record<string, unknown>[], columns = flowColumns) {
+		return executeDisplayMap({ ...linesInput, ...overrides }, queryResultsOf(columns, data));
+	}
+
+	it('draws lines without any warning', async () => {
+		const output = await executeLines({ ...segmentKeys, width_key: 'trips' }, [flow]);
+
+		expect(output).toMatchObject({ success: true, line_count: 1, dropped_row_count: 0 });
+		expect(output.dropped_reasons).toBeUndefined();
+		expect(output.warning).toBeUndefined();
+	});
+
+	it('reports why each dropped row is not drawn, and warns about the rows that start where they end', async () => {
+		const output = await executeLines(segmentKeys, [
+			flow,
+			{ ...flow, to_lat: flow.from_lat, to_lng: flow.from_lng },
+			{ ...flow, to_lat: flow.from_lat, to_lng: flow.from_lng },
+			{ ...flow, from_lat: null },
+		]);
+
+		expect(output).toMatchObject({
+			success: true,
+			line_count: 1,
+			dropped_row_count: 3,
+			dropped_reasons: { same_origin_destination: 2, invalid_coordinates: 1 },
+		});
+		expect(output.warning).toContain('2 row(s) have the same origin and destination and are not drawn');
+	});
+
+	it('reads a LineString column', async () => {
+		const route = JSON.stringify({
+			type: 'LineString',
+			coordinates: [
+				[2.35, 48.85],
+				[3.06, 50.63],
+			],
+		});
+
+		const output = await executeLines({ geometry_key: 'route' }, [{ route }], ['route']);
+
+		expect(output).toMatchObject({ success: true, line_count: 1 });
+	});
+
+	it.each([
+		{
+			variant: 'no line source',
+			overrides: { width_key: 'trips' },
+			error: 'are required for "lines" maps, unless geometry_key is set',
+		},
+		{
+			variant: 'only the origin columns',
+			overrides: { origin_latitude_key: 'from_lat', origin_longitude_key: 'from_lng' },
+			error: 'are required for "lines" maps, unless geometry_key is set',
+		},
+		{
+			variant: 'both line sources',
+			overrides: { ...segmentKeys, geometry_key: 'route' },
+			error: 'either the origin/destination columns or geometry_key, not both',
+		},
+		{
+			variant: 'a destination column missing from the query',
+			overrides: { ...segmentKeys, destination_longitude_key: 'to_lon' },
+			error: 'Column "to_lon" not found',
+		},
+	])('rejects $variant', async ({ overrides, error }) => {
+		const output = await executeLines(overrides, [flow]);
+
+		expect(output).toMatchObject({ success: false });
+		expect(output.error).toContain(error);
+	});
+
+	it('rejects a result without a drawable line, naming why the rows were dropped', async () => {
+		const output = await executeLines(segmentKeys, [
+			{ ...flow, to_lat: null },
+			{ ...flow, to_lat: flow.from_lat, to_lng: flow.from_lng },
+		]);
+
+		expect(output).toMatchObject({ success: false });
+		expect(output.error).toContain(
+			'(rows: 1 with missing or invalid coordinates, 1 with the same origin and destination)',
+		);
+	});
+
+	it('warns when the result exceeds the drawn line cap', async () => {
+		const manyFlows = Array.from({ length: MAX_MAP_LINES + 1 }, (_, index) => ({ ...flow, trips: index + 1 }));
+
+		const output = await executeLines(segmentKeys, manyFlows);
+
+		expect(output).toMatchObject({ success: true, line_count: MAX_MAP_LINES + 1 });
+		expect(output.warning).toContain(`only draws the ${MAX_MAP_LINES} heaviest`);
+	});
+
+	it('warns that curved does not apply to a geometry column', async () => {
+		const route = {
+			type: 'LineString',
+			coordinates: [
+				[2.35, 48.85],
+				[3.06, 50.63],
+			],
+		};
+
+		const output = await executeLines({ geometry_key: 'route', curved: true }, [{ route }], ['route']);
+
+		expect(output).toMatchObject({ success: true });
+		expect(output.warning).toContain('curved only applies to the origin/destination columns');
 	});
 });
 

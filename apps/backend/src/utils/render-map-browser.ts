@@ -4,6 +4,7 @@ import {
 	buildChoroplethEntries,
 	buildChoroplethLegend,
 	buildChoroplethScale,
+	buildMapLines,
 	buildMapPoints,
 	CHOROPLETH_MIN_OPACITY,
 	type ChoroplethLegendModel,
@@ -14,6 +15,8 @@ import {
 	DEFAULT_MARKER_RADIUS,
 	formatCompactNumber,
 	indexBoundaries,
+	LINE_OPACITY,
+	type LineWidthLegendItem,
 	type MapGeometry,
 	MAX_MAP_POINTS,
 	type NumericDomain,
@@ -21,15 +24,17 @@ import {
 	parseNumericValue,
 	resolveMapConfig,
 	scaleBubbleRadius,
+	visibleMapLines,
 	withOpacity,
 } from '@nao/shared';
+import { DEFAULT_DATE_FORMAT_SETTINGS } from '@nao/shared/date';
 import type { displayMap } from '@nao/shared/tools';
 
 import { getBrowser } from './headless-browser';
 import { logger } from './logger';
 import { resolveChoroplethBoundary } from './map-boundary-resolve';
 import { VIEW_HEIGHT, VIEW_WIDTH } from './static-map-svg';
-import { MAPLIBRE_CSS_URL, renderMapScript } from './story-html';
+import { buildLinePayload, type LinePayload, MAPLIBRE_CSS_URL, renderMapScript } from './story-html';
 
 const TITLE_BAND_HEIGHT = 40;
 const MAP_PADDING = 8;
@@ -62,11 +67,7 @@ export async function renderMapWithBrowser({
 	if (process.env.NAO_MAP_BROWSER_RENDER === 'false') {
 		return null;
 	}
-	const resolved = resolveMapConfig(rows, config);
-	const built =
-		resolved.map_type === 'choropleth'
-			? await buildChoroplethMap(resolved, rows, customBoundaries)
-			: buildPointsMap(resolved, rows);
+	const built = await buildMap(resolveMapConfig(rows, config), rows, customBoundaries);
 	if (!built) {
 		return null;
 	}
@@ -78,6 +79,29 @@ export async function renderMapWithBrowser({
 interface BuiltMap {
 	dataMap: DataMap;
 	legendHtml: string;
+}
+
+async function buildMap(
+	config: displayMap.Input,
+	rows: Record<string, unknown>[],
+	customBoundaries: CustomBoundarySet[],
+): Promise<BuiltMap | null> {
+	if (config.map_type === 'choropleth') {
+		return buildChoroplethMap(config, rows, customBoundaries);
+	}
+	if (config.map_type === 'lines') {
+		return buildLinesMap(config, rows);
+	}
+	return buildPointsMap(config, rows);
+}
+
+function buildLinesMap(config: displayMap.Input, rows: Record<string, unknown>[]): BuiltMap | null {
+	const lines = visibleMapLines(buildMapLines(rows, config));
+	if (lines.length === 0) {
+		return null;
+	}
+	const payload = buildLinePayload(lines, config, DEFAULT_DATE_FORMAT_SETTINGS);
+	return { dataMap: payload, legendHtml: lineLegendHtml(payload.color, payload.legend) };
 }
 
 function buildPointsMap(config: displayMap.Input, rows: Record<string, unknown>[]): BuiltMap | null {
@@ -213,7 +237,7 @@ interface ChoroplethDataMap {
 	fillOpacity: number | unknown[];
 }
 
-type DataMap = PointsDataMap | ChoroplethDataMap;
+type DataMap = PointsDataMap | ChoroplethDataMap | LinePayload;
 
 function buildMapHtml({
 	title,
@@ -250,6 +274,7 @@ html,body{background:#ffffff}
 .nao-map-legend-classes{display:grid;gap:2px}
 .nao-map-legend-class{display:flex;align-items:center;gap:6px}
 .nao-map-legend-swatch{display:block;width:10px;height:10px;border-radius:2px}
+.nao-map-legend-line{display:block;width:24px;border-radius:9999px}
 </style>
 </head>
 <body>
@@ -275,6 +300,21 @@ function bubbleLegendHtml(color: string, domain: NumericDomain, maxRadius: numbe
 		})
 		.join('');
 	return `<div class="nao-map-legend">${items}</div>`;
+}
+
+function lineLegendHtml(color: string, items: LineWidthLegendItem[]): string {
+	if (items.length === 0) {
+		return '';
+	}
+	const rows = items
+		.map((item) => {
+			const sampleStyle = escapeAttribute(
+				`height:${item.width}px;background:${withOpacity(color, LINE_OPACITY)}`,
+			);
+			return `<div class="nao-map-legend-class"><span class="nao-map-legend-line" style="${sampleStyle}"></span><span>${escapeHtml(item.label)}</span></div>`;
+		})
+		.join('');
+	return `<div class="nao-map-legend"><div class="nao-map-legend-classes">${rows}</div></div>`;
 }
 
 function choroplethLegendHtml(color: string, legend: ChoroplethLegendModel): string {
