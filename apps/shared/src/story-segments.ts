@@ -60,6 +60,13 @@ export interface ParsedMapBlock {
 	mapType: MapType;
 	latitudeKey?: string;
 	longitudeKey?: string;
+	originLatitudeKey?: string;
+	originLongitudeKey?: string;
+	destinationLatitudeKey?: string;
+	destinationLongitudeKey?: string;
+	widthKey?: string;
+	curved?: boolean;
+	arrows?: boolean;
 	labelKey?: string;
 	tooltipKeys?: string[];
 	color?: string;
@@ -73,7 +80,7 @@ export interface ParsedMapBlock {
 	boundariesJoinProperty?: string;
 	geometryKey?: string;
 	title: string;
-	/** Coordinate columns a point map cannot render without; the block shows a placeholder naming them. */
+	/** Coordinate columns a point or lines map cannot render without; the block shows a placeholder naming them. */
 	missingAttributes?: string[];
 	/** The original `<map ... />` tag this block was parsed from, when available. */
 	rawTag?: string;
@@ -244,6 +251,13 @@ export function parseMapBlock(attrString: string): ParsedMapBlock | null {
 		mapType,
 		latitudeKey: attrs.latitude_key || undefined,
 		longitudeKey: attrs.longitude_key || undefined,
+		originLatitudeKey: attrs.origin_latitude_key || undefined,
+		originLongitudeKey: attrs.origin_longitude_key || undefined,
+		destinationLatitudeKey: attrs.destination_latitude_key || undefined,
+		destinationLongitudeKey: attrs.destination_longitude_key || undefined,
+		widthKey: attrs.width_key || undefined,
+		curved: parseOptionalBooleanAttr(attrs.curved),
+		arrows: parseOptionalBooleanAttr(attrs.arrows),
 		labelKey: attrs.label_key || undefined,
 		tooltipKeys: parseStringArrayAttribute(attrs.tooltip_keys),
 		color: attrs.color || undefined,
@@ -265,8 +279,18 @@ function getMissingCoordinateAttributes(mapType: MapType, attrs: Record<string, 
 	if (mapType === 'choropleth') {
 		return [];
 	}
+	if (mapType === 'lines') {
+		return attrs.geometry_key ? [] : LINE_SEGMENT_ATTRIBUTES.filter((key) => !attrs[key]);
+	}
 	return ['latitude_key', 'longitude_key'].filter((key) => !attrs[key]);
 }
+
+const LINE_SEGMENT_ATTRIBUTES = [
+	'origin_latitude_key',
+	'origin_longitude_key',
+	'destination_latitude_key',
+	'destination_longitude_key',
+];
 
 /** Maps a parsed story `<map>` block to the `displayMap` tool input consumed by the live and static renderers. */
 export function mapBlockToInput(map: ParsedMapBlock): displayMap.Input {
@@ -275,6 +299,13 @@ export function mapBlockToInput(map: ParsedMapBlock): displayMap.Input {
 		map_type: (map.mapType || 'points') as displayMap.Input['map_type'],
 		latitude_key: map.latitudeKey,
 		longitude_key: map.longitudeKey,
+		origin_latitude_key: map.originLatitudeKey,
+		origin_longitude_key: map.originLongitudeKey,
+		destination_latitude_key: map.destinationLatitudeKey,
+		destination_longitude_key: map.destinationLongitudeKey,
+		width_key: map.widthKey,
+		curved: map.curved,
+		arrows: map.arrows,
 		label_key: map.labelKey,
 		tooltip_keys: map.tooltipKeys,
 		color: map.color,

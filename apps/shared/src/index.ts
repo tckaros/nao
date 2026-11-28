@@ -16,6 +16,7 @@ export * from './context-recommendation';
 export * from './date';
 export * from './execute-sql-parts';
 export * from './map';
+export * from './map-lines';
 export * from './mcp';
 export * from './mcp-embed';
 export * from './mentions';

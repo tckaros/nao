@@ -75,6 +75,13 @@ export function resolveMapConfig(rows: Record<string, unknown>[], config: displa
 		longitude_key: resolveDataKey(rows, config.longitude_key),
 		label_key: config.label_key && resolveDataKey(rows, config.label_key),
 		tooltip_keys: config.tooltip_keys?.map((key) => resolveDataKey(rows, key)),
+		origin_latitude_key: config.origin_latitude_key && resolveDataKey(rows, config.origin_latitude_key),
+		origin_longitude_key: config.origin_longitude_key && resolveDataKey(rows, config.origin_longitude_key),
+		destination_latitude_key:
+			config.destination_latitude_key && resolveDataKey(rows, config.destination_latitude_key),
+		destination_longitude_key:
+			config.destination_longitude_key && resolveDataKey(rows, config.destination_longitude_key),
+		width_key: config.width_key && resolveDataKey(rows, config.width_key),
 		size_key: config.size_key && resolveDataKey(rows, config.size_key),
 		value_key: config.value_key && resolveDataKey(rows, config.value_key),
 		region_key: config.region_key && resolveDataKey(rows, config.region_key),
@@ -98,9 +105,17 @@ export function buildMapPoints(
 			(point): point is MapPoint =>
 				point.latitude !== null &&
 				point.longitude !== null &&
-				Math.abs(point.latitude) <= MERCATOR_MAX_LATITUDE &&
-				Math.abs(point.longitude) <= 180,
+				isPlottableCoordinate(point.latitude, point.longitude),
 		);
+}
+
+export function isPlottableCoordinate(latitude: number, longitude: number): boolean {
+	return Math.abs(latitude) <= MERCATOR_MAX_LATITUDE && Math.abs(longitude) <= 180;
+}
+
+/** Point and bubble maps read one coordinate pair per row; choropleths and lines build their own geometry. */
+export function isPointMapType(mapType: displayMap.MapType): boolean {
+	return mapType === 'points' || mapType === 'scatter_bubble';
 }
 
 /**

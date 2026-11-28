@@ -2,7 +2,7 @@ import z from 'zod/v3';
 
 import { BUILTIN_BOUNDARY_REGION_KEY_HINTS, type CustomBoundarySet } from '../map';
 
-export const MapTypeEnum = z.enum(['points', 'scatter_bubble', 'choropleth']);
+export const MapTypeEnum = z.enum(['points', 'scatter_bubble', 'choropleth', 'lines']);
 
 export const RegionBoundariesEnum = z.enum(['world_countries', 'france_regions']);
 
@@ -30,7 +30,7 @@ export function buildInputObjectSchema(customSets?: CustomBoundarySet[]) {
 	return z.object({
 		query_id: z.string().describe("The id of a previous `execute_sql` tool call's output to get data from."),
 		map_type: MapTypeEnum.describe(
-			'Type of map: "points" (markers), "scatter_bubble" (markers sized by a numeric column), or "choropleth" (regions shaded by a numeric column).',
+			'Type of map: "points" (markers), "scatter_bubble" (markers sized by a numeric column), "choropleth" (regions shaded by a numeric column), or "lines" (one line per row between two places, e.g. flows or links, optionally sized by a numeric column).',
 		),
 		latitude_key: z
 			.string()
@@ -42,10 +42,46 @@ export function buildInputObjectSchema(customSets?: CustomBoundarySet[]) {
 			.describe(
 				'Column with the longitude in WGS84 decimal degrees. Required for "points" and "scatter_bubble".',
 			),
+		origin_latitude_key: z
+			.string()
+			.optional()
+			.describe(
+				'Column with the latitude where each line starts, for a "lines" map. Use with origin_longitude_key, destination_latitude_key and destination_longitude_key, or use geometry_key instead.',
+			),
+		origin_longitude_key: z
+			.string()
+			.optional()
+			.describe('Column with the longitude where each line starts, for a "lines" map.'),
+		destination_latitude_key: z
+			.string()
+			.optional()
+			.describe('Column with the latitude where each line ends, for a "lines" map.'),
+		destination_longitude_key: z
+			.string()
+			.optional()
+			.describe('Column with the longitude where each line ends, for a "lines" map.'),
+		width_key: z
+			.string()
+			.optional()
+			.describe(
+				'Numeric column that sets the width of each line in a "lines" map, proportional to the value (e.g. a trip count or a volume). The heaviest lines are drawn on top.',
+			),
+		curved: z
+			.boolean()
+			.optional()
+			.describe(
+				'Draws a "lines" map with arcs instead of straight lines, so that A→B and B→A lines do not overlap. Only applies to the origin/destination columns.',
+			),
+		arrows: z
+			.boolean()
+			.optional()
+			.describe(
+				'Draws an arrow in the middle of each line of a "lines" map, pointing from the origin to the destination, or along the geometry_key path. Defaults to curved: arcs show their direction, straight lines do not. Set it to false for links that have no direction.',
+			),
 		label_key: z
 			.string()
 			.optional()
-			.describe('Column name used as the title of the popup shown when a point or region is clicked.'),
+			.describe('Column name used as the title of the popup shown when a point, line or region is clicked.'),
 		tooltip_keys: z
 			.array(z.string())
 			.optional()
@@ -54,7 +90,7 @@ export function buildInputObjectSchema(customSets?: CustomBoundarySet[]) {
 			.string()
 			.optional()
 			.describe(
-				'CSS color for point/bubble markers, and the base color of the choropleth color scale. Defaults to the theme primary color when unset.',
+				'CSS color for point/bubble markers and lines, and the base color of the choropleth color scale. Defaults to the theme primary color when unset.',
 			),
 		radius: z
 			.number()
@@ -62,7 +98,7 @@ export function buildInputObjectSchema(customSets?: CustomBoundarySet[]) {
 			.max(30)
 			.optional()
 			.describe(
-				'Radius in pixels of the markers ("points"), or the largest bubble ("scatter_bubble"). Ignored by "choropleth". Defaults to 5.',
+				'Radius in pixels of the markers ("points"), or the largest bubble ("scatter_bubble"). Ignored by "choropleth" and "lines". Defaults to 5.',
 			),
 		size_key: z
 			.string()
@@ -93,7 +129,7 @@ export function buildInputObjectSchema(customSets?: CustomBoundarySet[]) {
 			.string()
 			.optional()
 			.describe(
-				'Column containing a GeoJSON geometry (string or object) per row for a custom "choropleth" (e.g. ST_AsGeoJSON in PostGIS). Use only when the geometry lives in the warehouse and no public URL exists — prefer boundaries_url instead. Never fabricate or approximate shapes (e.g. bounding boxes). When no real geometry exists for the requested zones, use a "points"/"scatter_bubble" map at each area centroid instead.',
+				'Column containing a GeoJSON geometry (string or object) per row (e.g. ST_AsGeoJSON in PostGIS). For a custom "choropleth", a polygon per region: use it only when the geometry lives in the warehouse and no public URL exists — prefer boundaries_url instead. For a "lines" map, a LineString or MultiLineString per row, for paths with intermediate points; use the origin/destination columns instead for straight lines. Never fabricate or approximate shapes (e.g. bounding boxes). When no real geometry exists for the requested zones, use a "points"/"scatter_bubble" map at each area centroid instead.',
 			),
 		title: z
 			.string()
@@ -115,22 +151,39 @@ const choroplethHasBoundary = (
 	(!!input.boundaries_url && !!input.region_key) ||
 	(!!input.region_boundaries && !!input.region_key);
 
+const LINE_SEGMENT_KEYS = [
+	'origin_latitude_key',
+	'origin_longitude_key',
+	'destination_latitude_key',
+	'destination_longitude_key',
+] as const;
+
+const LINES_SOURCE_MESSAGE = {
+	message:
+		'A lines map needs origin_latitude_key, origin_longitude_key, destination_latitude_key and destination_longitude_key, or geometry_key.',
+};
+
+const LINES_EXCLUSIVE_SOURCE_MESSAGE = {
+	message: 'A lines map takes either the origin/destination columns or geometry_key, not both.',
+};
+
+const linesHaveSource = (input: Input) => !!input.geometry_key || LINE_SEGMENT_KEYS.every((key) => !!input[key]);
+
+const linesHaveSingleSource = (input: Input) => !input.geometry_key || LINE_SEGMENT_KEYS.every((key) => !input[key]);
+
 export function buildInputSchema(customSets?: CustomBoundarySet[]) {
 	const base = buildInputObjectSchema(customSets);
-	const pointsSchema = base.required({ latitude_key: true, longitude_key: true });
-	const scatterBubbleSchema = base.required({ latitude_key: true, longitude_key: true, size_key: true });
-	const choroplethSchema = base
-		.required({ value_key: true })
-		.refine(choroplethHasBoundary, CHOROPLETH_BOUNDARY_MESSAGE);
+	const schemas: Record<MapType, z.ZodType> = {
+		points: base.required({ latitude_key: true, longitude_key: true }),
+		scatter_bubble: base.required({ latitude_key: true, longitude_key: true, size_key: true }),
+		choropleth: base.required({ value_key: true }).refine(choroplethHasBoundary, CHOROPLETH_BOUNDARY_MESSAGE),
+		lines: base
+			.refine(linesHaveSource, LINES_SOURCE_MESSAGE)
+			.refine(linesHaveSingleSource, LINES_EXCLUSIVE_SOURCE_MESSAGE),
+	};
 
 	return base.superRefine((input, context) => {
-		const schema =
-			input.map_type === 'choropleth'
-				? choroplethSchema
-				: input.map_type === 'scatter_bubble'
-					? scatterBubbleSchema
-					: pointsSchema;
-		const result = schema.safeParse(input);
+		const result = schemas[input.map_type].safeParse(input);
 		if (result.success) {
 			return;
 		}
@@ -153,6 +206,9 @@ export function getMissingMapAttributes(input: Input): string[] {
 
 const CHOROPLETH_BOUNDARY_ATTRIBUTES = 'region_key with region_boundaries or boundaries_url, or geometry_key';
 
+const LINES_SOURCE_ATTRIBUTES =
+	'origin_latitude_key, origin_longitude_key, destination_latitude_key and destination_longitude_key, or geometry_key';
+
 /**
  * Only the presence of region_boundaries matters for missing columns. A project's custom set fails the
  * built-in enum, which would stop the schema before it checks the required columns.
@@ -171,6 +227,9 @@ function describeMissingAttribute(issue: z.ZodIssue): string[] {
 	if (issue.message === CHOROPLETH_BOUNDARY_MESSAGE.message) {
 		return [CHOROPLETH_BOUNDARY_ATTRIBUTES];
 	}
+	if (issue.message === LINES_SOURCE_MESSAGE.message) {
+		return [LINES_SOURCE_ATTRIBUTES];
+	}
 	return [];
 }
 
@@ -181,7 +240,15 @@ export const OutputSchema = z.object({
 	warning: z.string().optional(),
 	point_count: z.number().optional(),
 	region_count: z.number().optional(),
+	line_count: z.number().optional(),
 	dropped_row_count: z.number().optional(),
+	dropped_reasons: z
+		.object({
+			same_origin_destination: z.number().optional(),
+			invalid_coordinates: z.number().optional(),
+			invalid_geometry: z.number().optional(),
+		})
+		.optional(),
 });
 
 export type MapType = z.infer<typeof MapTypeEnum>;

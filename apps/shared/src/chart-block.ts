@@ -84,6 +84,13 @@ export type StoryMapBlockInput = Pick<
 	| 'map_type'
 	| 'latitude_key'
 	| 'longitude_key'
+	| 'origin_latitude_key'
+	| 'origin_longitude_key'
+	| 'destination_latitude_key'
+	| 'destination_longitude_key'
+	| 'width_key'
+	| 'curved'
+	| 'arrows'
 	| 'label_key'
 	| 'tooltip_keys'
 	| 'color'
@@ -107,12 +114,21 @@ export function buildStoryMapBlock(input: StoryMapBlockInput): string {
 			? ` tooltip_keys='${escapeSingleQuotedStoryAttr(JSON.stringify(input.tooltip_keys))}'`
 			: '';
 	const radiusAttr = input.radius !== undefined ? ` radius="${input.radius}"` : '';
+	const curvedAttr = input.curved ? ' curved="true"' : '';
+	const arrowsAttr = input.arrows !== undefined ? ` arrows="${input.arrows}"` : '';
 	const titleAttr =
 		input.title != null && input.title !== '' ? ` title="${escapeDoubleQuotedStoryAttr(input.title)}"` : '';
 	return (
 		`<map query_id="${escapeDoubleQuotedStoryAttr(input.query_id)}" map_type="${escapeDoubleQuotedStoryAttr(input.map_type)}"` +
 		stringAttr('latitude_key', input.latitude_key) +
 		stringAttr('longitude_key', input.longitude_key) +
+		stringAttr('origin_latitude_key', input.origin_latitude_key) +
+		stringAttr('origin_longitude_key', input.origin_longitude_key) +
+		stringAttr('destination_latitude_key', input.destination_latitude_key) +
+		stringAttr('destination_longitude_key', input.destination_longitude_key) +
+		stringAttr('width_key', input.width_key) +
+		curvedAttr +
+		arrowsAttr +
 		stringAttr('label_key', input.label_key) +
 		tooltipAttr +
 		stringAttr('color', input.color) +

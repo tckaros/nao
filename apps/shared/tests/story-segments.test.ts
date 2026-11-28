@@ -939,6 +939,24 @@ describe('mapBlockToInput', () => {
 		const map = parseMapBlock('query_id="q1" latitude_key="lat" longitude_key="lng" title="Points"');
 		expect(mapBlockToInput(map!).map_type).toBe('points');
 	});
+
+	it('round-trips a curved lines block through buildStoryMapBlock', () => {
+		const input = {
+			query_id: 'q1',
+			map_type: 'lines' as const,
+			origin_latitude_key: 'from_lat',
+			origin_longitude_key: 'from_lng',
+			destination_latitude_key: 'to_lat',
+			destination_longitude_key: 'to_lng',
+			width_key: 'trips',
+			curved: true,
+			arrows: false,
+			title: 'Flows',
+		};
+		const tag = buildStoryMapBlock(input);
+
+		expect(mapBlockToInput(parseMapBlock(tag.slice('<map '.length, -3))!)).toMatchObject(input);
+	});
 });
 
 describe('incomplete map blocks', () => {
@@ -967,6 +985,29 @@ describe('incomplete map blocks', () => {
 
 		expect(points).not.toHaveProperty('missingAttributes');
 		expect(choropleth).not.toHaveProperty('missingAttributes');
+	});
+
+	it.each([
+		{
+			variant: 'a lines map without a line source',
+			attributes: '',
+			missing: [
+				'origin_latitude_key',
+				'origin_longitude_key',
+				'destination_latitude_key',
+				'destination_longitude_key',
+			],
+		},
+		{
+			variant: 'a lines map without its destination columns',
+			attributes: 'origin_latitude_key="a" origin_longitude_key="b"',
+			missing: ['destination_latitude_key', 'destination_longitude_key'],
+		},
+		{ variant: 'a lines map with a geometry column', attributes: 'geometry_key="route"', missing: undefined },
+	])('names the line columns missing from $variant', ({ attributes, missing }) => {
+		const map = parseMapBlock(`query_id="q1" map_type="lines" ${attributes}`);
+
+		expect(map?.missingAttributes).toEqual(missing);
 	});
 
 	it('describes the incomplete map for the placeholder', () => {
